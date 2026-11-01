@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <cstdint>
 #include <vector>
@@ -7,13 +7,14 @@
 
 namespace moss {
 
-// 与上游 browser_poc_manifest.json 一致的特殊 token
+// 与上游 prompting.py 一致的特殊 token
+constexpr int kImStart = 4;
 constexpr int kAudioStart = 6;
 constexpr int kAudioEnd = 7;
 constexpr int kUserSlot = 8;    // 参考音频行的 text 位
 constexpr int kAssistSlot = 9;  // 生成音频帧的 text 位
 
-// 音色前缀（与正文无关）：12 模板 + audio_start + N 帧音频 + audio_end + 58 模板
+// 音色前缀（与正文无关）：im_start + 12 模板 + audio_start + N 帧音频 + audio_end + 56 模板
 int voice_prefix_rows(int voice_frames);
 
 // 参考音频行：每帧一行 [kUserSlot, code0..code15]，codes 为 frame-major

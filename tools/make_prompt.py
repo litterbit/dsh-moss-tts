@@ -1,4 +1,4 @@
-﻿"""生成 C++ 引擎的 prompt 文件（每行 17 个整数：text_id + 16 个 code）。
+"""生成 C++ 引擎的 prompt 文件（每行 17 个整数：text_id + 16 个 code）。
 
 行结构与 ONNX 运行时完全一致：
     [prompt 前缀 token] + [参考音频 code 行] + [audio_end / 模板 / 正文 / assistant 前缀 / audio_start]
@@ -59,7 +59,12 @@ def build_rows(text: str, voice: str, codes_path: str | None = None) -> tuple[li
     prepared = normalize_text(text)
     text_ids = [int(t) for t in sp.encode(prepared, out_type=int)]
 
-    prefix = [*manifest["prompt_templates"]["user_prompt_prefix_token_ids"], int(cfg["audio_start_token_id"])]
+    # 上游 builder 的第一个 token 是 <|im_start|>（id 4），manifest 的模板漏了它
+    prefix = [
+        int(cfg["im_start_token_id"]),
+        *manifest["prompt_templates"]["user_prompt_prefix_token_ids"],
+        int(cfg["audio_start_token_id"]),
+    ]
     suffix = [
         int(cfg["audio_end_token_id"]),
         *manifest["prompt_templates"]["user_prompt_after_reference_token_ids"],

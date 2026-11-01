@@ -44,6 +44,12 @@ MOSS-TTS-Nano 的 CPU 推理后端，最终做成 DeepSeek TTS 插件。推理�
 4. Windows 下别用 PowerShell 的 `Get-Content`/`Set-Content` 改中文源码（GBK 往返会乱码），用编辑器。
 5. 仓库里 `infer_onnx.py` 会把输出写到自己目录下的 `generated_audio/`，沙箱里必然失败 → 用 `scripts/run_baseline.py` 走同样的运行时、指定输出目录。
 6. **transformers 5.x 的 `from_pretrained` 会把非持久 buffer 变成未初始化内存**（`modeling_utils.py:4793-4797` 用 `torch.empty_like` 重建）。checkpoint 的 `RotaryEmbedding.inv_freq` 正好是 `persistent=False`，于是 RoPE 静默失效、音频全错，而 194 个权重逐位加载正确。PyTorch 参考一律走 `src/dsh_moss_tts/torch_ref.py`（构造 + `load_state_dict`），并用 `assert_rope_ok` 兜底。详见 `doc/torch_reference.md`。
+7. **prompt 模板以 `prompting.py` 为准，别抄 manifest 的 token 数组**：
+   `browser_poc_manifest.json` 的 `user_prompt_prefix_token_ids` 少了开头的 `<|im_start|>`(4)，
+   而手抄 `after_reference` 时又多抄过一个 `505, 587`（`'▁N'+'one'`），prompt 变成
+   `- Text: None<正文>`，模型先把 "None" 念出来 —— 这是"每段开头多一声"的历史根因。
+   自检：行数 = `1 + 12 + 1 + N + 1 + 56 + text + 6 + 1`，且与 torch
+   `build_inference_input_ids` 逐字节相同（`python tools/make_prompt.py` + 对照 `runs/ab/prompt_rows.txt`）。
 
 ## 当前基线
 
