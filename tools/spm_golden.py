@@ -1,0 +1,101 @@
+﻿"""生成 SPM 分词对拍语料：文本 + 官方 sentencepiece 的 token ids。
+
+用法：
+    python tools/spm_golden.py --model tokenizer.model --out-dir tests/data
+产出：
+    tests/data/spm_corpus.txt   每行一句（UTF-8）
+    tests/data/spm_golden.txt   每行对应的 ids（空格分隔）
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import sentencepiece as spm
+
+CORPUS = [
+    "你好。",
+    "你好，我是语音助手。",
+    "这是一段用于对齐基准的测试音频，长度大约五秒。",
+    "2025年10月1日，价格是3.5元。",
+    "电话是13800138000。",
+    "第一、第二、第三，都要念清楚。",
+    "他说：“明天见！”然后就走了。",
+    "Hello world.",
+    "This is a test of the English voice.",
+    "The price is $3.50, about 12% higher than last year.",
+    "你好Hello混合测试，ABC123。",
+    "  前后有空格  ",
+    "中间   多个    空格",
+    "制表符\t在这里。",
+    "全角ＡＢＣ１２３。",
+    "①不对，②也不对。",
+    "Ⅻ 是罗马数字十二。",
+    "①也许可以。",
+    "逗号，句号。问号？感叹号！分号；冒号：",
+    "括号（中文）和(英文)。",
+    "引号“双引号”和‘单引号’。",
+    "破折号——省略号……",
+    "书名号《三体》和【方括号】。",
+    "温度是-5°C到35°C。",
+    "e=mc^2 是质能方程。",
+    "URL: https://example.com/path?q=1",
+    "邮箱 someone@example.com。",
+    "C++ 和 Rust 都是系统语言。",
+    "ASR、TTS、LLM 三个词。",
+    "第3章第2节，1.5倍速。",
+    "学校里有3000个学生。",
+    "今天的天气很好，适合出门散步。",
+    "我们明天上午九点在公司门口集合。",
+    "请把这份文件打印三份，放到会议室。",
+    "这个功能还没有实现，需要再等两天。",
+    "他说他会尽快回复你的邮件。",
+    "我喜欢听音乐、看电影和读书。",
+    "系统会在十秒后自动重启。",
+    "请注意，前方道路施工，请绕行。",
+    "Hello, how are you today?",
+    "I would like a cup of coffee, please.",
+    "The quick brown fox jumps over the lazy dog.",
+    "Machine learning models require a lot of data.",
+    "Please call me back at 9:30 tomorrow morning.",
+    "OK, 我明白了。",
+    "嗯……让我想想。",
+    "真的吗？！太棒了！",
+    "（笑）这个笑话不错。",
+    "数字：0 1 2 3 4 5 6 7 8 9。",
+    "百分号 50% 和千分号 3‰。",
+    "日期 2026-11-01，时间 18:30。",
+    "版本号 v2.3.1-release。",
+    "文件 app.js.map 很重要。",
+    "标签 #话题 和 @某人。",
+    "这句话里有一个英文单词 benchmark。",
+    "多语言：こんにちは、안녕하세요、Bonjour。",
+    "符号 ~!@#$%^&*()_+-=[]{}|;:',.<>/?",
+    "表情😀和😅也算字符。",
+    "㈱与﹣与～与Ⅷ。",
+    "零宽字符\u200b测试。",
+    "长的中文句子用来测试切分上限：今天的会议主要讨论三件事，第一是产品迭代节奏，第二是推理性能优化，第三是发版计划与验收标准。",
+]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--out-dir", required=True)
+    args = parser.parse_args()
+
+    sp = spm.SentencePieceProcessor(model_file=args.model)
+    out = Path(args.out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    corpus = out / "spm_corpus.txt"
+    golden = out / "spm_golden.txt"
+    corpus.write_text("\n".join(CORPUS) + "\n", encoding="utf-8")
+    lines = [" ".join(str(i) for i in sp.encode(text, out_type=int)) for text in CORPUS]
+    golden.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"{len(CORPUS)} sentences -> {corpus}, {golden}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
