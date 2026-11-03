@@ -217,6 +217,11 @@ bool TtsEngine::ensure_prefix_kv(std::string *err) {
     llm_->snapshot_prefix();
     if (!cache.empty()) {
         std::string save_err;
+        // 目录可能不存在（发布包不带 cache），先建出来；建不出来就跳过缓存，不影响合成
+        if (!cache.empty()) {
+            std::error_code ec;
+            std::filesystem::create_directories(std::filesystem::path(cache).parent_path(), ec);
+        }
         if (!llm_->save_prefix(cache, prefix_rows_, &save_err)) {
             std::fprintf(stderr, "[prefix] 缓存写不进去：%s\n", save_err.c_str());
         }
@@ -390,10 +395,10 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
     params.end_greedy = true;
     params.min_frames = std::max(0, options.min_frames);
     params.greedy_frames = std::max(0, options.greedy_frames);
-    params.temperature = 0.8f;
-    params.top_k = 25;
-    params.top_p = 0.95f;
-    params.repetition_penalty = 1.2f;
+    params.temperature = options.temperature;
+    params.top_k = options.top_k;
+    params.top_p = options.top_p;
+    params.repetition_penalty = options.repetition_penalty;
 
     const int chunk_frames = std::max(1, options.chunk_frames);
     const int prefix_pos = static_cast<int>(prefix_rows_.size());
@@ -439,7 +444,12 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
         auto decode_pending = [&](bool force) {
             const int n = static_cast<int>(pending.size());
             if (n == 0) return;
-            if (!force && n < chunk_frames) return;
+            // 首块更小：尽快吐出第一批音频，之后的块用正常大小。
+            // 取 4 帧（320 ms 音频）而不是 2 帧：2 帧只有 160 ms 缓冲，
+            // 弱机上生成下一块（8 帧）要 150~250 ms，会欠载卡顿。
+            const size_t want = (local.frames == 0) ? std::min<size_t>(4, static_cast<size_t>(chunk_frames))
+                                                    : static_cast<size_t>(chunk_frames);
+            if (!force && static_cast<size_t>(n) < want) return;
             codes.resize(static_cast<size_t>(n) * kNVq);
             for (int i = 0; i < kNVq; ++i)
                 for (int j = 0; j < n; ++j) {

@@ -60,6 +60,12 @@ public:
     bool save_prefix(const std::string &path, const std::vector<Row> &rows, std::string *err);
     bool load_prefix(const std::string &path, const std::vector<Row> &rows, std::string *err);
 
+    // 调试：把「prefill 完的状态」（KV + 最后一行 hidden）整份存/取。
+    // 用来隔离 prefill 与 decode 各自的精度影响（f16 prefill → int8 decode）。
+    bool save_state(const std::string &path, const std::vector<Row> &rows, std::string *err);
+    bool load_state(const std::string &path, const std::vector<Row> &rows, bool ignore_weights_fp,
+                    std::string *err);
+
     // 生成若干帧；返回每帧 16 个 code
     // forced 非空时为 teacher forcing：输入用 forced 的 codes，输出的是模型自己的预测，
     // 用于逐帧比较数值误差（自由生成会因 argmax 翻转级联，不适合做精度指标）。
@@ -107,6 +113,8 @@ private:
     void local_step(const float *input, float *out);
     void audio_logits(int channel, const float *hidden, float *logits);
     void text_logits(const float *hidden, float *logits);
+    // 只算「是否说完」用到的两行（audio_end=7 / slot=9）：省掉 16384×768 的整表点乘，数值完全相同
+    void assistant_logits(const float *hidden, float *pair);
 
     WeightFile wf_;
     Parallel par_;

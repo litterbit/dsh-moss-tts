@@ -44,10 +44,12 @@ bool read_prompt(const std::string &path, std::vector<Row> *rows, std::string *e
 int main(int argc, char **argv) {
     std::string weights, prompt_path, out_path, hidden_path, force_path, logits_path;
     std::string gate_path, end_mode = "greedy";
+    std::string state_in, state_out;
     int frames = 8;
     int threads = 4;
     int min_frames = 0;
     bool greedy = false;
+    bool ignore_state_fp = false;
     uint64_t seed = 0;
 
     for (int i = 1; i < argc; ++i) {
@@ -65,6 +67,9 @@ int main(int argc, char **argv) {
         else if (a == "--end-mode") end_mode = next();
         else if (a == "--min-frames") min_frames = std::stoi(next());
         else if (a == "--threads") threads = std::stoi(next());
+        else if (a == "--save-state") state_out = next();
+        else if (a == "--load-state") state_in = next();
+        else if (a == "--ignore-state-fp") ignore_state_fp = true;
         else if (a == "--greedy") greedy = true;
         else if (a == "--sample") greedy = false;
         else {
@@ -100,9 +105,22 @@ int main(int argc, char **argv) {
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_load0).count();
 
     const auto t_pre0 = std::chrono::steady_clock::now();
-    model.prefill(rows);
+    if (!state_in.empty()) {
+        // 移植别的精度算出来的 prefill 状态：跳过 prefill，只用它的 KV + hidden 往下生成
+        if (!model.load_state(state_in, rows, ignore_state_fp, &err)) {
+            std::fprintf(stderr, "%s\n", err.c_str());
+            return 1;
+        }
+    } else {
+        model.prefill(rows);
+    }
     const double prefill_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t_pre0).count();
+
+    if (!state_out.empty() && !model.save_state(state_out, rows, &err)) {
+        std::fprintf(stderr, "%s\n", err.c_str());
+        return 1;
+    }
 
     if (!hidden_path.empty()) {
         std::ofstream hf(hidden_path, std::ios::binary);

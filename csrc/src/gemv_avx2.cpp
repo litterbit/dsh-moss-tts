@@ -120,6 +120,35 @@ float row_dot_q8_4x4(const uint8_t *group, int nb, int k, const QuantizedActivat
     return hsum_ps(acc);
 }
 
+float row_dot_q8_4x4_actf32(const uint8_t *group, int nb, int k, const float *act) {
+    float sum = 0.0f;
+    for (int b = 0; b < nb; ++b) {
+        const uint8_t *blk = group + static_cast<size_t>(b) * 136;
+        const __m128i dh = _mm_loadl_epi64(reinterpret_cast<const __m128i *>(blk));
+        float dw[4];
+        _mm_storeu_ps(dw, _mm_cvtph_ps(dh));
+        const int8_t *qs = reinterpret_cast<const int8_t *>(blk + 8 + static_cast<size_t>(k) * 32);
+        const __m128i q0 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(qs));
+        const __m128i q1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(qs + 16));
+        const __m256i w0 = _mm256_cvtepi8_epi16(q0);
+        const __m256i w1 = _mm256_cvtepi8_epi16(q1);
+        const float *a = act + static_cast<size_t>(b) * 32;
+        __m256 acc = _mm256_mul_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(w0))), _mm256_loadu_ps(a));
+        acc = _mm256_fmadd_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(w0, 1))),
+            _mm256_loadu_ps(a + 8), acc);
+        acc = _mm256_fmadd_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_castsi256_si128(w1))),
+            _mm256_loadu_ps(a + 16), acc);
+        acc = _mm256_fmadd_ps(
+            _mm256_cvtepi32_ps(_mm256_cvtepi16_epi32(_mm256_extracti128_si256(w1, 1))),
+            _mm256_loadu_ps(a + 24), acc);
+        sum += hsum_ps(acc) * dw[k];
+    }
+    return sum;
+}
+
 float row_dot_q4_4x4(const uint8_t *group, int nb, int k, const QuantizedActivation &act) {
     __m256 acc = _mm256_setzero_ps();
     for (int b = 0; b < nb; ++b) {
@@ -152,7 +181,11 @@ void gemv_avx2_range(const Matrix &w, const float *x, const QuantizedActivation 
         const uint8_t *base = static_cast<const uint8_t *>(w.data);
         for (int r = r0; r < r1; ++r) {
             const uint8_t *grp = base + static_cast<size_t>(r / 4) * nb * bpb;
-            y[r] = q8 ? row_dot_q8_4x4(grp, nb, r % 4, A) : row_dot_q4_4x4(grp, nb, r % 4, A);
+            if (q8 && act16_enabled()) {
+                y[r] = row_dot_q8_4x4_actf32(grp, nb, r % 4, x);
+            } else {
+                y[r] = q8 ? row_dot_q8_4x4(grp, nb, r % 4, A) : row_dot_q4_4x4(grp, nb, r % 4, A);
+            }
         }
         return;
     }

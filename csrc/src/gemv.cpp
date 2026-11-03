@@ -1,6 +1,7 @@
 #include "moss/gemv.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -15,6 +16,57 @@ namespace {
 
 inline float scale_or(const float *table, int index, uint16_t half_bits) {
     return table ? table[index] : half_to_float(half_bits);
+}
+
+}  // namespace
+
+namespace {
+
+// 0 = 关，1 = 全开，2 = 只在 decode 开（prefill 期间挂起）
+int a16_mode() {
+    static const int mode = []() {
+        const char *v = std::getenv("MOSS_A16");
+        if (v == nullptr) return 0;
+        if (v[0] == '1' || std::strcmp(v, "all") == 0) return 1;
+        if (std::strcmp(v, "decode") == 0) return 2;
+        return 0;
+    }();
+    return mode;
+}
+
+bool g_a16_suspended = false;
+
+}  // namespace
+
+void act16_suspend(bool on) { g_a16_suspended = on; }
+
+bool act16_enabled() {
+    const int mode = a16_mode();
+    if (mode == 0) return false;
+    if (mode == 1) return true;
+    return !g_a16_suspended;
+}
+
+// 标量版 W8A16：Q8 权重 × fp32 激活（不量化激活），非 AVX2 机器的兜底
+float row_dot_q8_4x4_actf32_scalar(const uint8_t *group, int nb, int k, const float *act) {
+    float sum = 0.0f;
+    for (int b = 0; b < nb; ++b) {
+        const uint8_t *blk = group + static_cast<size_t>(b) * 136;
+        uint16_t dh;
+        std::memcpy(&dh, blk + k * 2, 2);
+        const int8_t *qs = reinterpret_cast<const int8_t *>(blk + 8 + static_cast<size_t>(k) * 32);
+        float dot = 0.0f;
+        for (int i = 0; i < 32; ++i) dot += static_cast<float>(qs[i]) * act[b * 32 + i];
+        sum += dot * half_to_float(dh);
+    }
+    return sum;
+}
+
+namespace {
+
+inline float row_dot_q8_4x4_a16(const uint8_t *grp, int nb, int k, const float *act) {
+    return cpu_features().avx2 ? row_dot_q8_4x4_actf32(grp, nb, k, act)
+                               : row_dot_q8_4x4_actf32_scalar(grp, nb, k, act);
 }
 
 }  // namespace
@@ -146,7 +198,11 @@ void gemv_scalar_range(const Matrix &w, const float *x, const QuantizedActivatio
             const uint8_t *base = static_cast<const uint8_t *>(w.data);
             for (int r = r0; r < r1; ++r) {
                 const uint8_t *grp = base + static_cast<size_t>(r / 4) * nb * bpb;
-                y[r] = q8 ? row_dot_q8_4x4_scalar(grp, nb, r % 4, A) : row_dot_q4_4x4_scalar(grp, nb, r % 4, A);
+                if (q8 && act16_enabled()) {
+                    y[r] = row_dot_q8_4x4_a16(grp, nb, r % 4, x);
+                } else {
+                    y[r] = q8 ? row_dot_q8_4x4_scalar(grp, nb, r % 4, A) : row_dot_q4_4x4_scalar(grp, nb, r % 4, A);
+                }
             }
             break;
         }
@@ -174,7 +230,8 @@ void gemv(const Matrix &w, const float *x, float *y, GemvScratch &scratch) {
     QuantizedActivation *act = nullptr;
     const bool quantized = w.dtype == DType::Q8_0 || w.dtype == DType::Q4_0 ||
                            w.dtype == DType::Q8_0_4X4 || w.dtype == DType::Q4_0_4X4;
-    if (quantized) {
+    const bool a16 = w.dtype == DType::Q8_0_4X4 && act16_enabled();
+    if (quantized && !a16) {
         prepare_activation(w, x, scratch);
         act = &scratch.act;
     }
@@ -194,8 +251,9 @@ void gemv_par(const Matrix &w, const float *x, float *y, GemvPoolScratch &pool) 
 
     const bool quantized = w.dtype == DType::Q8_0 || w.dtype == DType::Q4_0 ||
                            w.dtype == DType::Q8_0_4X4 || w.dtype == DType::Q4_0_4X4;
+    const bool a16 = w.dtype == DType::Q8_0_4X4 && act16_enabled();
     const QuantizedActivation *act = nullptr;
-    if (quantized) {
+    if (quantized && !a16) {
         quantize_activation(x, pool.shared, w.cols);
         act = &pool.shared;
     }
@@ -224,8 +282,12 @@ void gemm_par(const Matrix &w, const float *x, int m, float *y, GemvPoolScratch 
         // prefill：每行激活单独准备（含 even/odd 拆分），按 4 行组切分
         const bool q8 = w.dtype == DType::Q8_0_4X4;
         const size_t bpb = q8 ? 136 : 72;
-        std::vector<QuantizedActivation> acts(m);
-        for (int i = 0; i < m; ++i) quantize_activation(x + static_cast<size_t>(i) * cols, acts[i], cols);
+        const bool a16 = q8 && act16_enabled();
+        std::vector<QuantizedActivation> acts;
+        if (!a16) {
+            acts.resize(m);
+            for (int i = 0; i < m; ++i) quantize_activation(x + static_cast<size_t>(i) * cols, acts[i], cols);
+        }
         const uint8_t *base = static_cast<const uint8_t *>(w.data);
         run_tasks(pool, n, [&](int t) {
             const int groups = w.rows / 4;
@@ -236,8 +298,9 @@ void gemm_par(const Matrix &w, const float *x, int m, float *y, GemvPoolScratch 
                 const uint8_t *grp = base + static_cast<size_t>(g) * nb * bpb;
                 for (int i = 0; i < m; ++i) {
                     for (int k = 0; k < 4; ++k) {
-                        const float v = q8 ? row_dot_q8_4x4(grp, nb, k, acts[i])
-                                           : row_dot_q4_4x4(grp, nb, k, acts[i]);
+                        const float v = a16 ? row_dot_q8_4x4_a16(grp, nb, k, x + static_cast<size_t>(i) * cols)
+                                            : (q8 ? row_dot_q8_4x4(grp, nb, k, acts[i])
+                                                  : row_dot_q4_4x4(grp, nb, k, acts[i]));
                         y[static_cast<size_t>(i) * w.rows + g * 4 + k] = v;
                     }
                 }

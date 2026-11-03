@@ -62,6 +62,14 @@ void gemv_avx2_range(const Matrix &w, const float *x, const QuantizedActivation 
 // 4x4 repack 单行点积（group 指向该 4 行组的起始字节，k 是组内行号）
 float row_dot_q8_4x4(const uint8_t *group, int nb, int k, const QuantizedActivation &act);
 float row_dot_q4_4x4(const uint8_t *group, int nb, int k, const QuantizedActivation &act);
+
+// ---- W8A16 实验路径：Q8 权重 × 不量化的 fp32 激活 ----
+// 环境变量 MOSS_A16=1 时生效，用来评估"去掉激活量化"的精度收益与速度代价。
+// MOSS_A16=1|all 全部生效；MOSS_A16=decode 只在 decode 生效（prefill 期间由 LlmModel 临时挂起）
+bool act16_enabled();
+void act16_suspend(bool on);
+float row_dot_q8_4x4_actf32(const uint8_t *group, int nb, int k, const float *act);
+float row_dot_q8_4x4_actf32_scalar(const uint8_t *group, int nb, int k, const float *act);
 float row_dot_q8_4x4_scalar(const uint8_t *group, int nb, int k, const QuantizedActivation &act);
 float row_dot_q4_4x4_scalar(const uint8_t *group, int nb, int k, const QuantizedActivation &act);
 

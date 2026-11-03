@@ -1,6 +1,7 @@
 #include "moss/tts.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -15,6 +16,10 @@ using moss::TtsEngine;
 struct moss_engine {
     TtsEngine engine;
     std::string error;
+    float temperature = 0.8f;
+    int top_k = 25;
+    float top_p = 0.95f;
+    float repetition_penalty = 1.2f;
 };
 
 namespace {
@@ -43,6 +48,8 @@ moss_engine *moss_create(const char *llm_path, const char *decoder_path, const c
     options.cache_dir = cache_dir ? cache_dir : "";
     options.llm_threads = llm_threads > 0 ? llm_threads : 4;
     options.decode_threads = decode_threads > 0 ? decode_threads : options.llm_threads;
+    // 发布配置：吐 token 阶段 W8A16（prefill 仍 W8A8）。环境变量可覆盖，便于做实验。
+    if (std::getenv("MOSS_A16") == nullptr) _putenv_s("MOSS_A16", "decode");
     if (!handle->engine.load(options, &handle->error)) {
         delete handle;
         return nullptr;
@@ -65,6 +72,10 @@ int moss_speak(moss_engine *engine, const char *text, moss_pcm_cb on_pcm, void *
     options.greedy = greedy != 0;
     options.max_frames = max_frames > 0 ? max_frames : 375;
     options.chunk_frames = chunk_frames > 0 ? chunk_frames : 8;
+    options.temperature = engine->temperature;
+    options.top_k = engine->top_k;
+    options.top_p = engine->top_p;
+    options.repetition_penalty = engine->repetition_penalty;
     std::vector<int16_t> pcm;
     options.on_audio = [&](const float *data, int frames) {
         pcm.resize(static_cast<size_t>(frames) * 2);
@@ -73,6 +84,16 @@ int moss_speak(moss_engine *engine, const char *text, moss_pcm_cb on_pcm, void *
     };
     SynthStats stats;
     return engine->engine.synthesize(text, options, &stats, &engine->error) ? 0 : 1;
+}
+
+int moss_set_sampling(moss_engine *engine, float temperature, int top_k, float top_p,
+                      float repetition_penalty) {
+    if (!engine) return 1;
+    if (temperature > 0.0f) engine->temperature = temperature;
+    if (top_k > 0) engine->top_k = top_k;
+    if (top_p > 0.0f && top_p <= 1.0f) engine->top_p = top_p;
+    if (repetition_penalty > 0.0f) engine->repetition_penalty = repetition_penalty;
+    return 0;
 }
 
 int moss_clone(moss_engine *engine, const char *wav_path, const char *out_profile) {

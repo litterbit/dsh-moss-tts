@@ -31,9 +31,14 @@ struct SynthOptions {
     uint64_t seed = 0;
     bool greedy = false;
     int max_frames = 375;   // 每段帧上限（0 = 只受上下文限制）
-    int chunk_frames = 8;   // 解码块大小
+    int chunk_frames = 8;   // 解码块大小（首块固定 2 帧，见 engine.cpp）
     int min_frames = 0;     // 至少这么多帧才允许结束
-    int greedy_frames = 1;  // 前 N 帧强制贪心（稳住起音）
+    int greedy_frames = 0;  // 前 N 帧强制贪心（默认 0：全部走采样，起音问题根因是 prompt 模板）
+    // 采样参数（只影响 16 个音频 token；结束判定始终贪心）
+    float temperature = 0.8f;
+    int top_k = 25;
+    float top_p = 0.95f;
+    float repetition_penalty = 1.2f;
     int max_text_tokens = 75;
     // 交织 float32 音频回调，在调用线程上同步调用
     std::function<void(const float *, int)> on_audio;

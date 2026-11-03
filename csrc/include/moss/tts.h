@@ -30,6 +30,11 @@ void moss_destroy(moss_engine *engine);
 int moss_set_voice(moss_engine *engine, const char *name_or_profile);
 int moss_speak(moss_engine *engine, const char *text, moss_pcm_cb on_pcm, void *user, uint64_t seed,
                int greedy, int max_frames, int chunk_frames);
+// 采样参数（只影响 16 个音频 token；结束判定始终贪心）。默认 0.8 / 25 / 0.95 / 1.2。
+// 传 <=0 的字段表示保持默认。返回 0 表示成功。
+int moss_set_sampling(moss_engine *engine, float temperature, int top_k, float top_p,
+                      float repetition_penalty);
+
 int moss_clone(moss_engine *engine, const char *wav_path, const char *out_profile);
 int moss_text_tokens(moss_engine *engine, const char *text);
 const char *moss_last_error(moss_engine *engine);

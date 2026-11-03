@@ -77,6 +77,8 @@ build\moss_llm.exe --weights ..\weights\llm_q8.moss --prompt <prompt.txt> --fram
 
 自由生成的 codes 一致率**不可用**（argmax 对量化误差极敏感，翻转会级联）。
 一律用 teacher forcing：`--force-codes <参考 codes>`，比较 `teacher_flip_rate`；后续补 logits KL。
+**坑**：teacher forcing 时也必须加 `--greedy`，否则 `teacher_flip_rate` 统计的是采样命中率
+（≈1/top_k），会得到 83% 的假翻转。KL 不受影响，只有翻转率要用贪心口径。
 
 ### 当前实测
 
@@ -101,6 +103,78 @@ Q4 全量化翻转 70.6%，且只快 5%（内核算力受限），暂不采用�
 - 逐张量 Q4 消融：单组只省 4%，三组一起省 9% 但 KL 0.09、翻转 38% → **Q4 不进入发布配置**。
   若将来要用，global `attn.w` 是唯一性价比可接受的（单位收益 17.9）。
 - 导出：`--plan q8x4` / `--plan q4x4`；消融扫描：`python tools/sweep_q4.py ...`。
+
+### prefill vs decode 的精度拆分（2026-11-03）
+
+`moss_llm` 新增 `--save-state/--load-state [--ignore-state-fp]`：把 prefill 完的「KV + 最后一行 hidden」
+整份存盘，可跨权重精度移植（f16 prefill → int8 decode），用来把两段误差拆开。
+同句 60 帧、同一段 in-domain codes 的结果：
+
+| 组合 | KL | top-25 | code 翻转 |
+|---|---|---|---|
+| f16 prefill + int8 decode | 0.00318 | 96.3% | 8.2% |
+| int8 prefill + f16 decode | 0.00053 | 98.6% | 2.7% |
+| int8 + int8（生产） | 0.00403 | 96.0% | 10.0% |
+
+**结论：精度损失主体在 decode 的逐 token 激活量化，prefill 不到 1/3。** 别再把"效果偏差"归到 prefill 上。
+**坑**：teacher forcing 的 codes 必须 in-domain（同一 prompt 自己生成的），拿别的句子的 codes 会得到 88% 的假翻转。
+全景（各段精度/加速/耗时/体积）：`doc/推理栈现状.md`。
+
+### 权重精度下限：Q4 不可用（2026-11-03）
+
+39 个张量组逐个降到 Q4 的扫描（`tools/lab_sweep.py`，4 组语料含克隆）结论：
+
+| 组合 | 体积 | flip | KL | top-1 |
+|---|---|---|---|---|
+| Q8（生产） | 119.3 MB | 8.7% | 0.0042 | 91.7% |
+| Q4 仅全局 fc | 92.3 MB | 64.1% | 0.444 | 37.0% |
+| Q4 全局 | 78.8 MB | 74.5% | 0.777 | 26.1% |
+| Q4 全局+local | 75.4 MB | 84.5% | 1.146 | 16.4% |
+| Q4 全量化 | 63.4 MB | 85.9% | 1.161 | 14.7% |
+
+- **没有"便宜"的区域**：decode 侧任一组 Q4 都 ≥0.0045 ΔKL（≈ 当前全部量化损失），最多换 2.4 MB/帧（0.9%）。
+- **local 层最贵**（ΔKL 0.567、top-1 27%），它每帧要跑 17 次，误差放大 17 倍。
+- Q4 的音频响度暴涨 5 倍并削顶（RMS 0.074 → 0.402），人耳不用听也能判死。
+- 速度上 Q4 确实快 20%（6.43 → 5.17 ms/帧），但**端到端无收益**：解码器 5.9 ms/帧已成为瓶颈。
+- 结论：**8 bit 是这台模型的底线**；再压只能换量化方案（Q6/Q4_K 类，需要新内核）或优化解码器。
+  完整数据：`doc/LLM精度实验记录.md`。
+
+### W8A16（质量档，2026-11-03）
+
+权重仍 Q8、激活不量化（fp32），`--a16 off|decode|all`（或环境变量 `MOSS_A16`）。
+AVX2 没有 f16 算术，但 int8→fp32 展宽比预想便宜：
+
+| 模式 | flip | KL | LLM ms/帧 | prefill | 首音 |
+|---|---|---|---|---|---|
+| off（生产） | 8.7% | 0.0042 | 6.43 | 175 ms | 48 ms |
+| **decode** | 5.2% | 0.00145 | 7.39 | 167 ms | 52 ms |
+| all | 4.4% | 0.00102 | 7.50 | 303 ms | 65 ms |
+
+**prefill 开 A16 会慢 73%，只开 decode 最划算**（精度 2.9 倍、首音只 +4 ms）。
+**发布默认：`--a16 decode`**（C API 里也默认设成 decode，`--a16 off` 可退回全 A8 做实验）。
+实现：`gemv.cpp` 的 `act16_enabled()` + `row_dot_q8_4x4_actf32`。
+
+### 线程数怎么给（2026-11-03）
+
+两个独立线程池：`--threads`（LLM 的 GEMV/GEMM）+ `--decode-threads`（音频解码器），流水线并行，
+所以同一时刻最多 threads+decode_threads 个线程在忙。线程不绑核，每步有 barrier，超订反而更慢。
+
+实测同一台（6P+8E）：**4+4 = 6.88 ms/帧，3+3 = 7.65，2+2 = 11.35**。
+按物理核数给：2C→2+2，4C→3+3，6C+→4+4（解码器是热点，可 4+6）。超线程不算独立核。
+默认 4+4；**线程数不影响输出**（只切行），可以按机器随便调。
+
+### 前缀缓存（.mosskv）
+
+发布包不带 `models/cache`（每音色 9~19 MB），首次用到某音色会自动建目录并重建：
+首次首音 224 ms，之后 80 ms。删掉无损。
+
+### 两项已落地的零损失优化（2026-11-03）
+
+- `LlmModel::assistant_logits`：判句末只算 logits[7]/[9] 两行，不再整表 16384×768。
+  每帧少读 13.4 MB，local 段 2.51 → 2.37 ms，与整表路径 **codes 逐位相同**（`--dump-gate` 对照）。
+- 流水线首块 4 帧（之后回 8 帧）：首音 112 → **77 ms**。
+  2 帧能到 50 ms，但首块只有 160 ms 缓冲，弱机上生成下一块要 150~250 ms，会欠载卡顿，所以取 4。
+
 ## 阶段三（解码器）
 
 - 权重导出：`python tools/export_decoder.py --src <safetensors> --out weights/decoder_f32.moss --dtype f32`
@@ -213,6 +287,15 @@ tokenizer.mossvocab + voices/*.mossclone + include/moss/tts.h + lib/moss_tts.lib
 所以：**默认采样出音频 + 结束判定贪心**（`end_greedy`，`--end-mode sample` 可还原上游），
 外加 `--min-frames` 安全阀与 `--dump-gate gate.csv`（`frame,argmax_id,argmax_minus_slot,slot_minus_end`）。
 纯贪心模式（`--greedy`）不会自然结束，必须显式 `--frames`。
+
+### 采样参数（2026-11-03）
+
+- **16 个音频 token**：默认 temp 0.8 / top-k 25 / top-p 0.95 / rep 1.2，全部可调：
+  `--temp 0.8 --top-k 25 --top-p 0.95 --rep 1.2`；C API 用 `moss_set_sampling()`。
+- **结束判定（logits[7] vs [9]）始终贪心**，不受这些参数影响。
+- `--greedy-frames` 默认已从 1 改为 **0**：起音问题的根因是 prompt 模板（见坑 7），不是首帧采样。
+  5 个种子实测起音包络都是「静音 → 渐强」，没有"多一声"。
+- 采样是逐通道串行的：16 路各自维护历史（重复惩罚按通道算），第 ch 路以第 ch-1 路的 code 作输入。
 
 ### 运行时降级（已实测）
 

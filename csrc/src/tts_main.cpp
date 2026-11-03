@@ -54,7 +54,7 @@ void print_usage() {
     std::fprintf(stderr,
                  "用法: moss_tts --models <dir> --text <文本> [--out x.wav] [--pcm-raw f|-]\n"
                  "      [--voice Junhao | --profile x.mossclone] [--threads 4] [--decode-threads 6]\n"
-                 "      [--chunk 8] [--seed 0] [--greedy] [--frames 375] [--no-cache]\n"
+                 "      [--chunk 8] [--a16 off|decode|all] [--seed 0] [--greedy] [--frames 375] [--no-cache]\n      [--temp 0.8] [--top-k 25] [--top-p 0.95] [--rep 1.2] [--greedy-frames 0]\n"
                  "      [--list-voices] [--selftest]\n"
                  "      --llm/--decoder/--encoder/--vocab/--voices/--cache 可覆盖 --models 下的默认路径\n");
 }
@@ -66,11 +66,16 @@ int run(int argc, char **argv) {
     std::string models = "models";
     std::string llm, decoder, encoder, vocab, voices, cache;
     std::string text, text_file, out_path, raw_path, voice = "Junhao", profile;
+    std::string a16 = "decode";  // 发布默认：吐 token 阶段 A16
     int threads = 4;
     int decode_threads = 0;
     int chunk = 8;
     int frames = 375;
-    int greedy_frames = 1;
+    int greedy_frames = 0;
+    float temperature = 0.8f;
+    int top_k = 25;
+    float top_p = 0.95f;
+    float rep = 1.2f;
     uint64_t seed = 0;
     bool greedy = false;
     bool use_cache = true;
@@ -96,11 +101,16 @@ int run(int argc, char **argv) {
         else if (a == "--threads") threads = std::stoi(next());
         else if (a == "--decode-threads") decode_threads = std::stoi(next());
         else if (a == "--chunk") chunk = std::stoi(next());
+        else if (a == "--a16") a16 = next();
         else if (a == "--frames") frames = std::stoi(next());
         else if (a == "--seed") seed = std::stoull(next());
         else if (a == "--greedy") greedy = true;
         else if (a == "--no-cache") use_cache = false;
         else if (a == "--greedy-frames") greedy_frames = std::stoi(next());
+        else if (a == "--temp") temperature = std::stof(next());
+        else if (a == "--top-k") top_k = std::stoi(next());
+        else if (a == "--top-p") top_p = std::stof(next());
+        else if (a == "--rep") rep = std::stof(next());
         else if (a == "--list-voices") list_voices = true;
         else if (a == "--selftest") selftest = true;
         else {
@@ -151,6 +161,8 @@ int run(int argc, char **argv) {
         return 1;
     }
     if (decode_threads <= 0) decode_threads = threads;
+    // W8A16：off / decode / all（见 gemv.cpp 的 act16_enabled）
+    _putenv_s("MOSS_A16", a16 == "off" ? "" : a16.c_str());
     if (!file_exists(llm)) {
         std::fprintf(stderr, "找不到 LLM 权重: %s\n", llm.c_str());
         return 1;
@@ -221,6 +233,11 @@ int run(int argc, char **argv) {
     synth.greedy = greedy;
     synth.max_frames = frames > 0 ? frames : 375;
     synth.chunk_frames = chunk;
+    synth.greedy_frames = greedy_frames;
+    synth.temperature = temperature;
+    synth.top_k = top_k;
+    synth.top_p = top_p;
+    synth.repetition_penalty = rep;
     synth.greedy_frames = greedy_frames;
     synth.on_audio = [&](const float *data, int n) {
         audio.insert(audio.end(), data, data + static_cast<size_t>(n) * 2);

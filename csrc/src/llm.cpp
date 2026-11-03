@@ -1,4 +1,4 @@
-﻿#include "moss/llm.h"
+#include "moss/llm.h"
 
 #include <algorithm>
 #include <chrono>
@@ -269,9 +269,63 @@ void LlmModel::audio_logits(int channel, const float *hidden, float *logits) {
     gemv_par(aemb_[channel], hidden, logits, pool_scratch_);
 }
 
+// 「说完没」只看 audio_end(7) 与 slot(9) 两行：整表 16384×768 的点乘里 99.99% 是浪费。
+// 数值与 text_logits 的两行逐位相同（同一个量化激活、同一套行点积）。
+void LlmModel::assistant_logits(const float *hidden, float *pair) {
+    static constexpr int kRows[2] = {kEndToken, kSlotToken};
+    quantize_activation(hidden, pool_scratch_.shared, kHidden);
+    const QuantizedActivation &act = pool_scratch_.shared;
+    const int nb = kHidden / 32;
+    const uint8_t *base8 = static_cast<const uint8_t *>(wte_.data);
+    for (int i = 0; i < 2; ++i) {
+        const int r = kRows[i];
+        switch (wte_.dtype) {
+            case DType::Q8_0_4X4:
+                pair[i] = row_dot_q8_4x4(base8 + static_cast<size_t>(r / 4) * nb * 136, nb, r % 4, act);
+                break;
+            case DType::Q4_0_4X4:
+                pair[i] = row_dot_q4_4x4(base8 + static_cast<size_t>(r / 4) * nb * 72, nb, r % 4, act);
+                break;
+            case DType::Q8_0:
+                pair[i] = row_dot_q8(static_cast<const BlockQ8_0 *>(wte_.data) + static_cast<size_t>(r) * nb, nb,
+                                     act.blocks.data(), act.scales.data(),
+                                     wte_.scales ? wte_.scales + static_cast<size_t>(r) * nb : nullptr);
+                break;
+            case DType::Q4_0:
+                pair[i] = row_dot_q4(static_cast<const BlockQ4_0 *>(wte_.data) + static_cast<size_t>(r) * nb, nb,
+                                     act.blocks.data(), act.scales.data(),
+                                     wte_.scales ? wte_.scales + static_cast<size_t>(r) * nb : nullptr);
+                break;
+            case DType::F16: {
+                const uint16_t *row = static_cast<const uint16_t *>(wte_.data) + static_cast<size_t>(r) * kHidden;
+                float acc = 0.0f;
+                for (int c = 0; c < kHidden; ++c) acc += half_to_float(row[c]) * hidden[c];
+                pair[i] = acc;
+                break;
+            }
+            default: {
+                const float *row = static_cast<const float *>(wte_.data) + static_cast<size_t>(r) * kHidden;
+                float acc = 0.0f;
+                for (int c = 0; c < kHidden; ++c) acc += row[c] * hidden[c];
+                pair[i] = acc;
+                break;
+            }
+        }
+    }
+}
+
 // prefill：按层批量。权重只读一遍，attention 用已写入的 KV cache。
 // start>0 表示接着已有的前缀 KV 往后写（多段文本 / 前缀缓存复用）。
+namespace {
+// MOSS_A16=decode 时，prefill 期间临时关掉 A16（prefill 是算力受限，A16 会让它慢 70%）
+struct A16PrefillGuard {
+    A16PrefillGuard() { act16_suspend(true); }
+    ~A16PrefillGuard() { act16_suspend(false); }
+};
+}  // namespace
+
 void LlmModel::prefill(const std::vector<Row> &rows, int start) {
+    A16PrefillGuard a16_guard;
     start = std::max(0, std::min(start, kMaxCtx));
     const int m = static_cast<int>(std::min<size_t>(rows.size(), static_cast<size_t>(kMaxCtx - start)));
     if (m <= 0) return;
@@ -495,6 +549,88 @@ bool LlmModel::load_prefix(const std::string &path, const std::vector<Row> &rows
     return true;
 }
 
+// ---------------- prefill 状态移植（调试） ----------------
+
+namespace {
+
+constexpr char kStateMagic[8] = {'M', 'O', 'S', 'S', 'S', 'T', '1'};
+
+}  // namespace
+
+bool LlmModel::save_state(const std::string &path, const std::vector<Row> &rows, std::string *err) {
+    if (pos_ <= 0) {
+        if (err) *err = "状态为空，无法保存";
+        return false;
+    }
+    std::FILE *f = std::fopen(path.c_str(), "wb");
+    if (!f) {
+        if (err) *err = "写不了状态文件: " + path;
+        return false;
+    }
+    KvHeader h{};
+    std::memcpy(h.magic, kStateMagic, 8);
+    h.layers = 12;
+    h.n_pos = static_cast<uint32_t>(pos_);
+    h.hidden = kHidden;
+    h.rows_fp = fp_rows(rows);
+    h.weights_fp = weights_fp_;
+    std::fwrite(&h, sizeof(h), 1, f);
+    for (int layer = 0; layer < 12; ++layer) {
+        const size_t src = static_cast<size_t>(layer) * kMaxCtx * kHidden;
+        std::fwrite(g_k_.data() + src, sizeof(float), static_cast<size_t>(pos_) * kHidden, f);
+        std::fwrite(g_v_.data() + src, sizeof(float), static_cast<size_t>(pos_) * kHidden, f);
+    }
+    std::fwrite(hidden_.data(), sizeof(float), kHidden, f);
+    std::fclose(f);
+    return true;
+}
+
+bool LlmModel::load_state(const std::string &path, const std::vector<Row> &rows, bool ignore_weights_fp,
+                          std::string *err) {
+    std::FILE *f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        if (err) *err = "打不开状态文件: " + path;
+        return false;
+    }
+    KvHeader h{};
+    if (std::fread(&h, sizeof(h), 1, f) != 1 || std::memcmp(h.magic, kStateMagic, 8) != 0 ||
+        h.version != 1 || h.layers != 12 || h.hidden != static_cast<uint32_t>(kHidden) || h.n_pos == 0 ||
+        h.n_pos > static_cast<uint32_t>(kMaxCtx)) {
+        std::fclose(f);
+        if (err) *err = "状态文件格式不对: " + path;
+        return false;
+    }
+    if (h.rows_fp != fp_rows(rows)) {
+        std::fclose(f);
+        if (err) *err = "状态文件与 prompt 不匹配（rows 指纹不符）";
+        return false;
+    }
+    if (!ignore_weights_fp && h.weights_fp != weights_fp_) {
+        std::fclose(f);
+        if (err) *err = "状态文件与当前权重不匹配（weights 指纹不符）";
+        return false;
+    }
+    for (int layer = 0; layer < 12; ++layer) {
+        const size_t dst = static_cast<size_t>(layer) * kMaxCtx * kHidden;
+        const size_t n = static_cast<size_t>(h.n_pos) * kHidden;
+        if (std::fread(g_k_.data() + dst, sizeof(float), n, f) != n ||
+            std::fread(g_v_.data() + dst, sizeof(float), n, f) != n) {
+            std::fclose(f);
+            if (err) *err = "状态文件被截断: " + path;
+            return false;
+        }
+    }
+    if (std::fread(hidden_.data(), sizeof(float), kHidden, f) != static_cast<size_t>(kHidden)) {
+        std::fclose(f);
+        if (err) *err = "状态文件缺少 hidden: " + path;
+        return false;
+    }
+    std::fclose(f);
+    pos_ = static_cast<int>(h.n_pos);
+    snapshot_prefix();
+    return true;
+}
+
 std::vector<Row> LlmModel::generate(int max_frames, const SampleParams &audio_params, uint64_t seed,
                                     std::vector<FrameTiming> *timing, const std::vector<Row> *forced,
                                     const std::function<void(int, const Row &)> &on_frame) {
@@ -510,9 +646,20 @@ std::vector<Row> LlmModel::generate(int max_frames, const SampleParams &audio_pa
 
         local_reset();
         local_step(hidden_.data(), lx_.data());
-        text_logits(lx_.data(), logits_.data());
-        const float l_slot = logits_[kSlotToken];
-        const float l_end = logits_[kEndToken];
+        float l_slot = 0.0f;
+        float l_end = 0.0f;
+        if (gate_dump_path_.empty()) {
+            // 常规路径：只算两行
+            float pair[2];
+            assistant_logits(lx_.data(), pair);
+            l_end = pair[0];
+            l_slot = pair[1];
+        } else {
+            // 调试路径（要 argmax_id）才整表算
+            text_logits(lx_.data(), logits_.data());
+            l_slot = logits_[kSlotToken];
+            l_end = logits_[kEndToken];
+        }
         if (!gate_dump_path_.empty()) {
             int argmax_id = 0;
             float argmax_v = logits_[0];
