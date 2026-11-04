@@ -94,7 +94,14 @@
 
   async function initAudio() {
     if (state.node) return;
-    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    // 优先 48 kHz；个别设备/浏览器不接受指定采样率，就退回默认并在 postSamples 里重采样
+    let ctx;
+    try {
+      ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    } catch (err) {
+      ctx = new AudioContext({ latencyHint: 'interactive' });
+    }
+    if (!ctx.audioWorklet) throw new Error('这个浏览器不支持 AudioWorklet');
     await ctx.audioWorklet.addModule('pcm-worklet.js');
     const node = new AudioWorkletNode(ctx, 'pcm-player', { outputChannelCount: [2] });
     node.port.onmessage = (event) => {
@@ -190,7 +197,12 @@
   async function generate() {
     const text = $('text').value.trim();
     if (!text) { setStatus('文本为空', 'err'); return; }
-    await initAudio();
+    try {
+      await initAudio();
+    } catch (err) {
+      setStatus('音频初始化失败：' + (err.message || err), 'err');
+      return;
+    }
     if (state.ctx.state === 'suspended') await state.ctx.resume();
     resetPlayer();
 
