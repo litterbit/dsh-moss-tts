@@ -3,6 +3,8 @@ rem Build with cl directly (cmake's compiler probe hangs inside the sandbox).
 rem ASCII only: cmd.exe reads .bat as ANSI/936, UTF-8 Chinese comments break parsing.
 rem Static CRT (/MT) is explicit: the release must not need VC++ redistributables.
 setlocal enabledelayedexpansion
+rem Run from this file's directory so `csrc\build.bat` works when called from the repo root (CI).
+pushd "%~dp0"
 
 rem Fast path: the local dev box. Anywhere else (CI runners, other machines)
 rem fall back to vswhere, which ships with every VS installer.
