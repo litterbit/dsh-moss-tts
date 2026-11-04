@@ -90,6 +90,7 @@ python tools/http_smoke.py                            :: 服务端冒烟（流�
 | `web/app/` | 本地试听台（随包发布，由服务托管） |
 | `web/landing/` | GitHub Pages 门户 |
 | `tools/` | 权重导出、ONNX 对拍、冒烟测试、量化扫描（Python，离线用） |
+| `dsh-plugin/` | DeepSeek Harness 插件（Node，spawn `--stdio`，与网页/CLI 共用同一个 exe） |
 | `scripts/` | 权重下载、模型 lock、打包、发布 |
 | `doc/` | 设计文档与实测记录（`api.md`、`产品化与分发方案.md`、`1103定档-推理栈现状.md`） |
 

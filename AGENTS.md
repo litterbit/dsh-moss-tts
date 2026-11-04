@@ -401,3 +401,22 @@ pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0     :: dist/MossTTS-win-x64-
 | 连续合成 | 20 连跑 0 失败，RSS 222 → 252 MB（首音色前缀 KV + job 表），队列归零 |
 | stdio 通道 | `tools/stdio_smoke.py`：ping/info/voices/speak/cancel/clone/关 stdin 退出全过；`begin` 恒在首个 `audio` 之前 |
 | 冒烟脚本 | `python tools/http_smoke.py --base http://127.0.0.1:8759` / `python tools/stdio_smoke.py`（须用 conda 的 python；控制台先 `chcp 65001`） |
+
+## 插件层（dsh-plugin/，2026-11-04）
+
+DSH 宿主插件接入的是 `--stdio`，不是 HTTP：不需要端口、不需要先起服务，插件自己 spawn 常驻子进程。
+
+```
+index.mjs    DSH 入口：export { name, inject:['tools'], apply(ctx, config) }
+             ctx.tools.register(defineTool(...)) 注册 4 个工具；ctx.effect 里 dispose 子进程
+backend.mjs  TtsBackend：spawn --stdio、按行解析、把 audio 行 base64 解成 PCM 回调、取消、克隆
+player.mjs   Windows 播放：写临时 WAV → System.Media.SoundPlayer.PlaySync()（阻塞到播完）
+```
+
+- `defineTool` 从宿主 asar 里 import：`<resources>/app.asar/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js`，
+  先用 `process.resourcesPath` 推，再退回写死路径；两边都失败就退化成恒等函数，保证插件至少能加载。
+- 两个回归脚本都在仓库里、都不需要 DSH：
+  `node dsh-plugin/test-backend.mjs`（协议层 10 项）、`node dsh-plugin/test-plugin.mjs`（假 ctx 里注册并真合成）。
+- 播放刻意选"整段合成完再播"：引 ffplay/sox 会加依赖，而 5 s 语音只要 0.76 s 合成；流式播放留到 v2。
+- 还没做"助手回复自动朗读"（需要宿主消息事件），现在只有显式工具调用。
+
