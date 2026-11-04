@@ -10,12 +10,12 @@
 
 ## 安装
 
-在 profile 的 `cordis.patch.yml` 里加一段（路径换成你自己的）：
+发布包（`MossTTS-win-x64-full.zip`）里已经带了 `dsh-plugin/`，装完后直接指向安装目录即可：
 
 ```yaml
 - insert:
     - id: moss-tts
-      name: D:\workplace\audio\dsh-moss-tts\dsh-plugin\index.mjs
+      name: D:\MossTTS\dsh-plugin\index.mjs
       config:
         exe: D:\MossTTS\moss_tts.exe
         models: D:\MossTTS\models
@@ -24,6 +24,8 @@
         # llmThreads: 4                    # 可选：0 = 按物理核自动
         # decodeThreads: 6
 ```
+
+从源码仓库用时，`name` 指向仓库里的 `dsh-plugin\index.mjs` 也一样。
 
 `exe` / `models` 省略时会依次找：`MOSS_TTS_EXE` 环境变量 → `%LOCALAPPDATA%\MossTTS\` →
 当前目录的 `moss_tts.exe` / `dist/moss-tts-cpu-win64/moss_tts.exe`。

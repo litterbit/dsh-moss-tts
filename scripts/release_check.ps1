@@ -91,6 +91,18 @@ if ($LASTEXITCODE -ne 0) { Fail "plugin backend tests failed" }
 node (Join-Path $root "dsh-plugin/test-plugin.mjs")
 if ($LASTEXITCODE -ne 0) { Fail "plugin entry tests failed" }
 
+Step "script encoding guard"
+# Windows PowerShell 5.1 reads a .ps1 with no BOM as ANSI: a stray Chinese byte can eat the
+# next quote and break the parser in ways that only show up on a clean machine. Keep every
+# script either pure ASCII or explicitly BOM'd.
+foreach ($file in (Get-ChildItem (Join-Path $root "scripts") -Filter *.ps1)) {
+    $bytes = [System.IO.File]::ReadAllBytes($file.FullName)
+    $hasBom = $bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF
+    $nonAscii = ($bytes | Where-Object { $_ -gt 127 }).Count
+    if (-not $hasBom -and $nonAscii -gt 0) { Fail ("$($file.Name): non-ASCII without UTF-8 BOM") }
+}
+Write-Host "    all scripts ASCII or BOM'd"
+
 Step "pack full / lite / sdk"
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root "scripts/pack_release.ps1") -Mode all -Tag $Tag
 if ($LASTEXITCODE -ne 0) { Fail "pack failed" }
@@ -99,9 +111,10 @@ Step "verify packages"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $root "dist/MossTTS-win-x64-full.zip"))
 try {
-    # Compress-Archive 在 Windows PowerShell 5.1 里用反斜杠存条目名，先归一化再比对
+    # Compress-Archive stores entry names with backslashes on Windows PowerShell 5.1: normalize first
     $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
     $required = @("moss_tts.exe", "moss_clone.exe", "web/index.html", "web/app.js", "web/pcm-worklet.js",
+                  "dsh-plugin/index.mjs", "dsh-plugin/backend.mjs", "dsh-plugin/player.mjs",
                   "models/llm_q8x4.moss", "models/decoder_f16.moss", "models/encoder_f16.moss",
                   "models/tokenizer.mossvocab", "models/manifest.json", "LICENSE", "NOTICE", "README.txt")
     $missing = $required | Where-Object { $names -notcontains $_ }

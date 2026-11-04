@@ -418,7 +418,9 @@ player.mjs   Windows 播放：写临时 WAV → System.Media.SoundPlayer.PlaySyn
 - 两个回归脚本都在仓库里、都不需要 DSH：
   `node dsh-plugin/test-backend.mjs`（协议层 10 项）、`node dsh-plugin/test-plugin.mjs`（假 ctx 里注册并真合成）。
 - 一条命令复现整条发布门禁：`pwsh scripts/release_check.ps1`（编译 → 内核/分词回归 → selftest →
-  HTTP 冒烟 → stdio 冒烟 → node 插件测试 → 打包 → 校验 zip），顺序与 `release.yml` 一致。
+  HTTP 冒烟 → stdio 冒烟 → node 插件测试 → 编码守卫 → 打包 → 校验 zip），顺序与 `release.yml` 一致。
+- 包内 `README.txt` 的正文在 `doc/release_readme.txt`（UTF-8），`pack_release.ps1` 本身保持**纯 ASCII**：
+  这样即使编辑器把 BOM 弄丢，PS 5.1 也不会按 ANSI 解码把脚本解析坏。`release_check.ps1` 有守卫直接拦。
 - 播放刻意选"整段合成完再播"：引 ffplay/sox 会加依赖，而 5 s 语音只要 0.76 s 合成；流式播放留到 v2。
 - 还没做"助手回复自动朗读"（需要宿主消息事件），现在只有显式工具调用。
 

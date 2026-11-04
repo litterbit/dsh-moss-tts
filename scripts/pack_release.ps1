@@ -1,4 +1,4 @@
-﻿# Assemble release packages into dist/.
+# Assemble release packages into dist/.
 #
 #   pwsh scripts/pack_release.ps1 -Mode full|lite|sdk|all [-Tag v0.1.0] [-SkipVerify]
 #
@@ -70,55 +70,23 @@ function Copy-Common([string]$dir) {
     Copy-Item (Join-Path $root "LICENSE") $dir
     Copy-Item (Join-Path $root "NOTICE") $dir
     Copy-Item (Join-Path $root "web/app") (Join-Path $dir "web") -Recurse
+    # Ship the DSH plugin too: after install, point the profile at <install dir>\dsh-plugin\index.mjs
+    Copy-Item (Join-Path $root "dsh-plugin") (Join-Path $dir "dsh-plugin") -Recurse
 }
 
 function Write-Readme([string]$dir, [string]$kind) {
-    $models = if ($kind -eq "full") {
-        "本包已自带权重（models/，约 160 MB）。`r`n"
-    } else {
-        "本包**不含**权重。把 weights/ 里的 llm_q8x4.moss / decoder_f16.moss / encoder_f16.moss /`r`n" +
-        "tokenizer.mossvocab 与 voices/ 放到 exe 同级的 models/ 目录下即可（或参考 doc/api.md）。`r`n"
+    # README body lives in doc/release_readme.txt (UTF-8). Keeping the Chinese out of
+    # this script means the script can stay pure ASCII, so Windows PowerShell 5.1
+    # cannot mis-decode it as ANSI even when the BOM gets lost by an editor.
+    $templatePath = Join-Path $root "doc/release_readme.txt"
+    if (-not (Test-Path $templatePath)) { throw "missing $templatePath" }
+    $template = [System.IO.File]::ReadAllText($templatePath, [System.Text.Encoding]::UTF8)
+    $kept = foreach ($line in ($template -split "`r?`n")) {
+        if ($kind -ne "full" -and $line.StartsWith("<!--FULL-->")) { continue }
+        if ($kind -ne "lite" -and $line.StartsWith("<!--LITE-->")) { continue }
+        ($line -replace '^<!--(FULL|LITE)-->', '')
     }
-    $text = @"
-MOSS-TTS CPU 推理引擎 $Tag  （Windows x64）
-
-一、三步开始
-  1. 解压到任意目录，例如 D:\MossTTS
-  2. 双击 moss_tts.exe（不带参数 = 启动本地服务并自动打开浏览器）
-  3. 浏览器里输入文字，Ctrl+Enter 合成
-
-  默认地址 http://127.0.0.1:8759/ ，只监听本机，不弹防火墙。
-  首次运行 Windows 可能提示"已保护你的电脑"：更多信息 -> 仍要运行（未购买代码签名证书）。
-
-$models
-二、命令行
-  moss_tts.exe --text "你好，世界。" --voice Junhao --out hello.wav
-  moss_tts.exe --text "..." --pcm-raw - > out.pcm      （流式 s16le / 48 kHz / 立体声）
-  moss_tts.exe --list-voices
-  moss_clone.exe --encoder models/encoder_f16.moss --in ref.wav --out models/voices/me.mossclone --name me
-  moss_tts.exe --version
-
-三、程序自己的数据
-  便携模式：models/ 在 exe 旁边时，缓存与克隆音色写到 exe 同级的 userdata/。
-  共享模式：找不到 models/ 时，回退到 %LOCALAPPDATA%\MossTTS\。
-  删掉 userdata/ 或 models/cache/ 都不会丢东西，只是下次首音慢一点（约 0.2 s）。
-
-四、接入自己的程序
-  本地 HTTP（只监听 127.0.0.1）：
-    GET  /api/v1/health | /info | /voices
-    POST /api/v1/tts/stream    JSON -> chunked s16le
-    POST /api/v1/tts/wav       JSON -> 完整 WAV
-    POST /api/v1/voices/clone?name=xxx
-    GET  /api/v1/jobs/<id>     统计
-    POST /api/v1/jobs/<id>/cancel
-  C 接口：include/moss/tts.h + lib/moss_tts.lib
-  详见仓库 doc/api.md。
-
-五、许可
-  Apache-2.0，见 LICENSE；模型派生与改动说明见 NOTICE。
-  请只使用你有权使用的声音做克隆。
-"@
-    # BOM 让老版记事本也能正确识别 UTF-8
+    $text = ($kept -join "`r`n").Replace("{{TAG}}", $Tag)
     [System.IO.File]::WriteAllText((Join-Path $dir "README.txt"), $text,
         (New-Object System.Text.UTF8Encoding($true)))
 }

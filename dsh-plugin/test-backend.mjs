@@ -61,15 +61,14 @@ try {
   const cancelled = await long.done
   check('取消', cancelled.state === 'cancelled', `state=${cancelled.state} frames=${cancelled.frames}`)
 
-  // 4) 克隆
-  if (fs.existsSync(wav)) {
-    const cloned = await tts.clone('plugin_test', wav)
-    check('clone', cloned?.type === 'cloned', String(cloned?.name))
+  // 4) 克隆（优先用仓库里的演示音频；发布包里没有它，就退回刚生成的那段）
+  const cloneSource = fs.existsSync(wav) ? wav : file
+  {
+    const cloned = await tts.clone('plugin_test', cloneSource)
+    check('clone', cloned?.type === 'cloned', `${String(cloned?.name)} <- ${path.basename(cloneSource)}`)
     const after = await tts.voices()
     check('克隆音色出现在列表里', after.user.some((v) => v.id === 'plugin_test'),
       after.user.map((v) => v.id).join(','))
-  } else {
-    check('clone', false, `缺少 WAV：${wav}`)
   }
 
   // 5) PCM → WAV 头自洽

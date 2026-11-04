@@ -107,6 +107,7 @@ jobs:
             # Compress-Archive 在 Windows PowerShell 5.1 里用反斜杠存条目名，先归一化再比对
             $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
             $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/pcm-worklet.js",
+                          "dsh-plugin/index.mjs","dsh-plugin/backend.mjs","dsh-plugin/player.mjs",
                           "models/llm_q8x4.moss","models/decoder_f16.moss","models/encoder_f16.moss",
                           "models/tokenizer.mossvocab","models/manifest.json","LICENSE","NOTICE","README.txt")
             $missing = $required | Where-Object { $names -notcontains $_ }
