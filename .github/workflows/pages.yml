@@ -27,6 +27,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+        with:
+          # 仓库里第一次跑时自动把 Pages 打开（需要仓库允许 Actions 创建 Pages）
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/landing
