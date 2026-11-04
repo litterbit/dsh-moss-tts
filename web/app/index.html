@@ -57,6 +57,9 @@
   a { color: var(--accent); text-decoration: none; }
   a:hover { text-decoration: underline; }
   .hidden { display: none !important; }
+  a.btn { display: inline-block; text-decoration: none; border-radius: 9px; padding: 9px 16px;
+          background: var(--accent); color: #fff; font-weight: 600; }
+  a.btn:hover { filter: brightness(1.08); }
 </style>
 </head>
 <body>
@@ -67,6 +70,19 @@
     <span class="pill" id="perf" hidden></span>
   </header>
   <div class="sub">文本进、音频出，全部在你这台电脑的 CPU 上算，不上传任何内容。首块出声约 0.1 s，速度约为实时的 7 倍。</div>
+
+  <div class="panel hidden" id="offline">
+    <b>没检测到本地引擎</b>
+    <p class="hint" id="offline-hint">这个页面只是遥控器，合成要在本机进程里跑。</p>
+    <div class="actions" style="margin-top:12px">
+      <a class="btn" id="download-btn"
+         href="https://github.com/litterbit/dsh-moss-tts/releases/latest/download/MossTTS-win-x64-full.zip">
+        下载 Windows 完整包（约 159 MB）
+      </a>
+      <button id="retry">重新检测</button>
+    </div>
+    <div class="hint">下载 → 解压 → 双击 <code>moss_tts.exe</code>（会自动打开本地页面），再回到这里点"重新检测"。</div>
+  </div>
 
   <div class="panel">
     <label for="text">文本</label>

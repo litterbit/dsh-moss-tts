@@ -75,7 +75,7 @@ try {
         Start-Sleep -Milliseconds 500
     }
     if (-not $ready) { Fail "server did not become ready" }
-    & $Python (Join-Path $root "tools/http_smoke.py") --base "http://127.0.0.1:8790"
+    & $Python (Join-Path $root "tools/http_smoke.py") --base "http://127.0.0.1:8790" --cross-origin "https://litterbit.github.io"
     if ($LASTEXITCODE -ne 0) { Fail "http smoke failed" }
 } finally {
     if ($server -and -not $server.HasExited) { Stop-Process -Id $server.Id -Force }

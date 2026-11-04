@@ -40,6 +40,10 @@ constexpr int kRecvTimeoutMs = 10000;
 constexpr int kSendTimeoutMs = 30000;
 constexpr int kJobTimeoutMs = 600000;
 
+// 项目门户的 origin。默认放行，这样用户双击 exe 之后，Pages 上的页面可以直接连本机引擎。
+// 想完全关掉跨源就传 `--allow-origin none`（见 tts_main.cpp）。
+constexpr const char *kProjectOrigins[] = {"https://litterbit.github.io"};
+
 struct Request {
     std::string method;
     std::string target;
@@ -533,7 +537,14 @@ class Server {
 public:
     Server(Runtime &rt, const ServerOptions &opt, int port)
         : rt_(rt), opt_(opt), port_(port), self_origins_{"http://127.0.0.1:" + std::to_string(port),
-                                                          "http://localhost:" + std::to_string(port)} {}
+                                                          "http://localhost:" + std::to_string(port)} {
+        // 自己的门户页：允许它直接连本机引擎（"打开网页就能用"的那条路）。
+        // 只放行我们这一个 origin，不是 *.github.io —— 每个 GitHub Pages 用户是独立 origin。
+        if (opt_.allow_project_origin) {
+            for (const char *origin : kProjectOrigins) self_origins_.emplace_back(origin);
+        }
+        for (const auto &extra : opt_.allow_origins) self_origins_.push_back(extra);
+    }
 
     void handle(SOCKET sock);
 

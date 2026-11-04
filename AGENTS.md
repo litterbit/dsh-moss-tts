@@ -387,7 +387,9 @@ pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0     :: dist/MossTTS-win-x64-
    只看 `len` 不看返回值；之前 `physical_cores` 直接写死 1，自动线程数会退化成 1+1。
 7. **浏览器到 loopback 的通道**：https 页面 fetch `http://127.0.0.1` 是允许的（loopback 被视为可信来源），
    但 Chrome 的 Private Network Access 预检要求服务端回 `Access-Control-Allow-Private-Network: true`；
-   `ws://` 没有这个豁免，所以协议只用 HTTP chunked。v0.1 默认不放开跨域（门户页只做下载/跳转）。
+   `ws://` 没有这个豁免，所以协议只用 HTTP chunked。现在默认就放行**项目门户这一个 origin**
+   （`https://litterbit.github.io`），`web/app/app.js` 在非本机托管时会自己探测 8759→8763；
+   `--allow-origin none` 可彻底关掉。
 
 ### 验收（已实测）
 

@@ -83,6 +83,8 @@ def main() -> int:
     parser.add_argument("--base", default="http://127.0.0.1:8759")
     parser.add_argument("--voice", default="Junhao")
     parser.add_argument("--frames", type=int, default=24)
+    parser.add_argument("--cross-origin", default="",
+                        help="再验证一遍跨源直连：给它一个允许的 Origin（例如 https://litterbit.github.io）")
     args = parser.parse_args()
     client = Client(args.base)
 
@@ -174,6 +176,30 @@ def main() -> int:
 
     code, _, _ = client.request("GET", "/api/v1/tts/stream")
     check("错误方法被拒", code in (405, 404), f"HTTP {code}")
+
+    # 6. 跨源直连（浏览器从门户页连本机引擎的那条路）
+    if args.cross_origin:
+        origin = args.cross_origin
+        code, head, _ = client.request("OPTIONS", "/api/v1/tts/stream", headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type",
+            "Access-Control-Request-Private-Network": "true",
+        })
+        check("跨源预检 204", code == 204, f"HTTP {code}")
+        check("预检回 ACAO", head.get("access-control-allow-origin") == origin,
+              str(head.get("access-control-allow-origin")))
+        check("预检回 PNA", head.get("access-control-allow-private-network") == "true",
+              str(head.get("access-control-allow-private-network")))
+        code, head, body = client.request("POST", "/api/v1/tts/wav",
+                                          body=json.dumps(payload).encode(),
+                                          headers={"Content-Type": "application/json", "Origin": origin})
+        check("跨源 POST 放行", code == 200 and head.get("access-control-allow-origin") == origin,
+              f"HTTP {code}")
+        code, _, _ = client.request("POST", "/api/v1/tts/wav", body=json.dumps(payload).encode(),
+                                    headers={"Content-Type": "application/json",
+                                             "Origin": "https://evil.example"})
+        check("其他 origin 仍被拒", code == 403, f"HTTP {code}")
 
     # 5. WAV
     code, head, body = client.request("POST", "/api/v1/tts/wav",

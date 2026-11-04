@@ -5,7 +5,12 @@
 //   POST /api/v1/jobs/{id}/cancel
 (() => {
   const $ = (id) => document.getElementById(id);
-  const API = location.protocol === 'file:' ? 'http://127.0.0.1:8759' : location.origin;
+  // 同一个页面跑在两种地方：
+  //   1) 本机服务托管的页面 → 同源，API = location.origin
+  //   2) GitHub Pages（或 file://）→ 跨源连 http://127.0.0.1:8759（端口占用时会顺延）
+  const LOOPBACK = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
+  const LOCAL_PORTS = [8759, 8760, 8761, 8762, 8763];
+  let API = LOOPBACK ? location.origin : '';
 
   const state = {
     voices: { builtin: [], user: [] },
@@ -31,13 +36,46 @@
     $('dot').className = 'dot' + (kind ? ' ' + kind : '');
   }
 
+  function setOffline(show) {
+    $('offline').classList.toggle('hidden', !show);
+    if (show && LOOPBACK) {
+      $('offline-hint').textContent = '本地页面已经打开了，但服务没有响应；可能是进程刚退出，重启 moss_tts.exe 再试。';
+    } else if (show) {
+      $('offline-hint').textContent = '这个网页只是遥控器，合成要在本机进程里跑。装好之后双击 moss_tts.exe，再点"重新检测"。';
+    }
+  }
+
   function withTimeout(ms) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     return { signal: controller.signal, done: () => clearTimeout(timer) };
   }
 
+  /** 在本机端口上找一个活着的引擎；本机托管时直接同源。 */
+  async function findLocalEngine() {
+    if (LOOPBACK) return location.origin;
+    const probes = LOCAL_PORTS.map((port) => {
+      const base = `http://127.0.0.1:${port}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 900);
+      return fetch(`${base}/api/v1/health`, { signal: controller.signal })
+        .then((res) => (res.ok ? base : null))
+        .catch(() => null)
+        .finally(() => clearTimeout(timer));
+    });
+    const results = await Promise.all(probes);
+    return results.find((value) => value !== null) || '';
+  }
+
   async function probe() {
+    API = await findLocalEngine();
+    if (!API) {
+      setEngine('未检测到本地引擎', 'err');
+      setOffline(true);
+      $('go').disabled = true;
+      setStatus('本地引擎没有运行', 'err');
+      return false;
+    }
     const t = withTimeout(1500);
     try {
       const res = await fetch(API + '/api/v1/health', { signal: t.signal });
@@ -49,11 +87,13 @@
       $('perf').hidden = false;
       $('perf').textContent = `${engine.physical_cores} 物理核 · 队列 ${info.queue ? info.queue.max : '?'}`;
       $('go').disabled = false;
+      setOffline(false);
       return true;
     } catch (err) {
       setEngine('未检测到本地引擎', 'err');
+      setOffline(true);
       $('go').disabled = true;
-      setStatus('本地引擎没有运行：请先双击 MossTTS（或 moss_tts.exe）再回到这个页面。', 'err');
+      setStatus('本地引擎没有运行', 'err');
       return false;
     } finally {
       t.done();
@@ -368,6 +408,17 @@
   $('stop').onclick = stop;
   $('save').onclick = saveWav;
   $('clone-go').onclick = createVoice;
+  $('retry').onclick = async () => {
+    setStatus('正在检测…');
+    if (await probe()) {
+      try {
+        await loadVoices();
+        setStatus('已连接本地引擎', 'ok');
+      } catch (err) {
+        setStatus('音色列表加载失败：' + (err.message || err), 'err');
+      }
+    }
+  };
   $('temp').oninput = () => { $('temp-v').textContent = Number($('temp').value).toFixed(2); };
   $('topp').oninput = () => { $('topp-v').textContent = Number($('topp').value).toFixed(2); };
   $('text').addEventListener('keydown', (event) => {

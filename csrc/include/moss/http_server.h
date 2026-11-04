@@ -21,6 +21,7 @@ struct ServerOptions {
     int port_attempts = 5;               // 端口占用时顺延次数
     bool open_browser = true;
     int max_connections = 16;
+    bool allow_project_origin = true;        // 放行项目门户的 origin（浏览器直连本地引擎）
     std::vector<std::string> allow_origins;  // 额外允许的精确 Origin
 };
 

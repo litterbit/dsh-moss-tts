@@ -15,8 +15,15 @@
 | 错误 | 非 2xx 返回 `{"ok":false,"code":"...","error":"中文可读信息"}` |
 
 **安全模型**：`Host` 必须是 `127.0.0.1:<port>`、`localhost:<port>` 或 `[::1]:<port>`；
-带 `Origin` 的请求必须精确匹配本服务自己的 origin（或启动时 `--allow-origin` 追加的项），
-否则 403。客户端（Node 插件、curl、Python）不带 `Origin` 即可直接调用。
+带 `Origin` 的请求必须精确匹配白名单，否则 403。白名单默认是：
+
+1. 本服务自己的 origin（`http://127.0.0.1:<port>` / `http://localhost:<port>`）；
+2. 项目门户 `https://litterbit.github.io`——这样 Pages 上的页面可以直接连本机引擎（"打开网页就能用"）；
+3. `--allow-origin <origin>` 追加的其他 origin。
+
+想彻底关掉跨源（连门户页也不放行）：`--allow-origin none`。
+跨源预检（Chrome 的 Private Network Access）会带 `Access-Control-Request-Private-Network: true`，
+服务端回 `Access-Control-Allow-Private-Network: true`；不带 Origin 的客户端（Node 插件、curl、Python）直接调用即可。
 
 ## 2. 端点
 

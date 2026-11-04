@@ -30,8 +30,17 @@ jobs:
         with:
           # 仓库里第一次跑时自动把 Pages 打开（需要仓库允许 Actions 创建 Pages）
           enablement: true
+
+      - name: Stage site (portal + same UI copy for the direct-connect path)
+        shell: bash
+        run: |
+          mkdir -p _site/app
+          cp -r web/landing/. _site/
+          cp -r web/app/. _site/app/
+          ls -la _site _site/app
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: web/landing
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4

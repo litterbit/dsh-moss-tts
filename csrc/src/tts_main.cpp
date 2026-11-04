@@ -303,7 +303,14 @@ int run(int argc, char **argv) {
         so.web_dir = web_dir.empty() ? dir_join(exe_dir(), "web") : web_dir;
         so.port = serve_port;
         so.open_browser = open_browser;
-        if (!allow_origin.empty()) so.allow_origins.push_back(allow_origin);
+        if (!allow_origin.empty()) {
+            // `--allow-origin none` = 完全禁止跨源（连项目门户页也不放行）
+            if (allow_origin == "none") {
+                so.allow_project_origin = false;
+            } else {
+                so.allow_origins.push_back(allow_origin);
+            }
+        }
         std::string url;
         if (!serve_forever(runtime, so, &url, &serve_err)) {
             std::fprintf(stderr, "%s\n", serve_err.c_str());

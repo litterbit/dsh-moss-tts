@@ -42,6 +42,10 @@ moss_tts.exe --serve --port 9000 --no-open
 moss_tts.exe --stdio             :: 给插件用：stdin/stdout 上的 JSON 行协议，不占端口
 ```
 
+装好之后，门户页上的「在网页里直接试听」也能用：页面会自己探测 `127.0.0.1`（8759→8763）
+并连上本机引擎；连不上就提示去下载。默认只放行本项目这一个 origin，
+`--allow-origin none` 可彻底关掉跨源。
+
 **命令行**
 
 ```bat
