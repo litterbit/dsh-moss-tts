@@ -39,6 +39,7 @@ MOSS-TTS-Nano-100M 的原生 **C++ CPU 推理引擎**（Windows x64，零第三�
 ```bat
 moss_tts.exe                     :: 起服务，自动打开 http://127.0.0.1:8759/
 moss_tts.exe --serve --port 9000 --no-open
+moss_tts.exe --stdio             :: 给插件用：stdin/stdout 上的 JSON 行协议，不占端口
 ```
 
 **命令行**

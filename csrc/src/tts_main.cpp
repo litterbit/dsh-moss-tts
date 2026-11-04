@@ -19,6 +19,7 @@
 #include "moss/engine.h"
 #include "moss/http_server.h"
 #include "moss/runtime.h"
+#include "moss/stdio_server.h"
 #include "moss/version.h"
 #include "moss/wav.h"
 
@@ -113,14 +114,14 @@ bool write_pcm16(const std::string &path, const std::vector<float> &interleaved)
 void print_usage() {
     std::fprintf(stderr,
                  "用法:\n"
-                 "  moss_tts [--serve] [--port 8759] [--no-open] [--web dir] [--data dir]\n"
+                 "  moss_tts [--serve] [--stdio] [--port 8759] [--no-open] [--web dir] [--data dir]\n"
                  "           --models <dir> --text <文本> [--out x.wav] [--pcm-raw f|-]\n"
                  "      [--voice Junhao | --profile x.mossclone] [--threads 0=auto] [--decode-threads 0=auto]\n"
                  "      [--chunk 8] [--a16 off|decode|all] [--seed 0] [--greedy] [--frames 375] [--no-cache]\n"
                  "      [--temp 0.8] [--top-k 25] [--top-p 0.95] [--rep 1.2] [--greedy-frames 0]\n"
                  "      [--list-voices] [--selftest] [--version]\n"
                  "      --llm/--decoder/--encoder/--vocab/--voices/--cache 可覆盖 --models 下的默认路径\n"
-                 "  不带参数 = 启动本地服务并打开浏览器。\n");
+                 "  不带参数 = 启动本地服务并打开浏览器；--stdio = 给插件用的 JSON 行通道。\n");
 }
 
 }  // namespace
@@ -146,6 +147,7 @@ int run(int argc, char **argv) {
     bool list_voices = false;
     bool selftest = false;
     bool serve = false;
+    bool stdio_mode = false;
     bool open_browser = true;
     bool show_version = false;
     bool cache_explicit = false;
@@ -184,6 +186,7 @@ int run(int argc, char **argv) {
         else if (a == "--list-voices") list_voices = true;
         else if (a == "--selftest") selftest = true;
         else if (a == "--serve") serve = true;
+        else if (a == "--stdio") stdio_mode = true;
         else if (a == "--port") serve_port = std::stoi(next());
         else if (a == "--no-open") open_browser = false;
         else if (a == "--web") web_dir = next();
@@ -236,16 +239,16 @@ int run(int argc, char **argv) {
         std::printf("]}\n");
         return names.empty() ? 2 : 0;
     }
-    if (!serve && text.empty() && !selftest) {
+    if (!serve && !stdio_mode && text.empty() && !selftest) {
         print_usage();
         return 1;
     }
-    if (!serve && !selftest && out_path.empty() && raw_path.empty()) {
+    if (!serve && !stdio_mode && !selftest && out_path.empty() && raw_path.empty()) {
         std::fprintf(stderr, "至少要给 --out 或 --pcm-raw 之一\n");
         return 1;
     }
-    if (!serve && threads <= 0) threads = 4;
-    if (!serve && decode_threads <= 0) decode_threads = threads;
+    if (!serve && !stdio_mode && threads <= 0) threads = 4;
+    if (!serve && !stdio_mode && decode_threads <= 0) decode_threads = threads;
     // W8A16：off / decode / all（见 gemv.cpp 的 act16_enabled）
     _putenv_s("MOSS_A16", a16 == "off" ? "" : a16.c_str());
     if (!file_exists(llm)) {
@@ -265,11 +268,11 @@ int run(int argc, char **argv) {
     std::fprintf(stderr, "cpu=%s avx2=%d backend=%s llm_threads=%d decode_threads=%d\n", feat.brand.c_str(),
                  feat.avx2, feat.gemv_backend(), threads, decode_threads);
 
-    if (serve) {
+    if (serve || stdio_mode) {
         std::string serve_err;
         const std::string resolved_data = data_dir.empty() ? resolve_data_dir(models) : data_dir;
         const std::string user_voices = dir_join(resolved_data, "voices/user");
-        // 服务模式：缓存统一放用户数据目录，程序目录保持只读也能跑
+        // 常驻模式（--serve / --stdio）：缓存统一放用户数据目录，程序目录保持只读也能跑
         if (!cache_explicit) cache = dir_join(resolved_data, "cache");
         std::error_code ec;
         std::filesystem::create_directories(user_voices, ec);
@@ -293,6 +296,8 @@ int run(int argc, char **argv) {
             return 1;
         }
         std::fprintf(stderr, "data=%s\n", resolved_data.c_str());
+
+        if (stdio_mode) return run_stdio_server(runtime);
 
         ServerOptions so;
         so.web_dir = web_dir.empty() ? dir_join(exe_dir(), "web") : web_dir;

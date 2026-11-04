@@ -8,7 +8,9 @@ namespace moss {
 namespace {
 
 constexpr int kMaxDepth = 8;
-constexpr size_t kMaxString = 64 * 1024;
+// stdio 通道会把整段 WAV 用 base64 塞进一行（几 MB），这里放到 8 MB；
+// HTTP 侧的请求体另有 256 KB 上限，不受影响。
+constexpr size_t kMaxString = 8 * 1024 * 1024;
 constexpr size_t kMaxNodes = 4096;
 
 struct Parser {

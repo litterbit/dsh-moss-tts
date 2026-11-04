@@ -320,13 +320,18 @@ tokenizer.mossvocab + voices/*.mossclone + include/moss/tts.h + lib/moss_tts.lib
 ```
 moss_tts.exe
 ├── 无参数 / --serve  → Runtime（队列/取消/统计）← JsonHttpServer（127.0.0.1）← web/app（浏览器）
-├── --text ...        → TtsEngine（CLI，单次进程）
-└── （后续）--stdio    → 同一个 Runtime，给 DSH 插件用
+├── --stdio           → 同一个 Runtime，JSON 行协议走 stdin/stdout（DSH 插件走这条）
+└── --text ...        → TtsEngine（CLI，单次进程）
 ```
+
+- `csrc/src/stdio_server.cpp`：`{"id","cmd"}` 一行进、`begin` / `audio`(base64) / `done` 一行出。
+  `speak` 异步提交，主线程继续读 stdin 才能收到 `cancel`；`begin` 用客户端 id 当 job id，
+  保证它一定排在第一个 `audio` 之前。测试：`tools/stdio_smoke.py`。
 
 - `csrc/src/runtime.cpp`：单工作线程 + 有界队列（默认 4）+ job 表（TTL 10 min / 32 条）+ 取消 + 统计 + 音色枚举/克隆 + 路径解析。传输层只做编解码，**模型状态只在这里**。
 - `csrc/src/server.cpp`：Winsock HTTP/1.1，只绑 `127.0.0.1`；`SO_EXCLUSIVEADDRUSE`（Windows 上 `SO_REUSEADDR` 允许多个进程绑同一端口，别用）；端口 8759→8763 顺延。
-- `csrc/src/json.cpp`：最小 JSON（深度 8、字符串 64 KB、拒绝 NaN/Inf、支持 `\uXXXX` 代理对）。零依赖是硬约束，不引 cpp-httplib / nlohmann。
+- `csrc/src/json.cpp`：最小 JSON（深度 8、单个字符串 8 MB——stdio 会把整段 WAV 用 base64 塞进一行、
+  拒绝 NaN/Inf、支持 `\uXXXX` 代理对）。零依赖是硬约束，不引 cpp-httplib / nlohmann。
 
 ### API v1（细节见 `doc/api.md`）
 
@@ -393,4 +398,6 @@ pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0     :: dist/MossTTS-win-x64-
 | 取消 | 15~20 ms 内连接结束，状态 `cancelled`，不吐完整段 |
 | 安全 | 错误 Host / 跨源 Origin / 目录穿越 / 超大 JSON / 坏 JSON / 错误方法 全部 4xx |
 | 包内运行 | `runs/pkg` 解压后 `--version`/`--selftest`/`--serve` 全部正常，模型信息来自 `models/manifest.json` |
-| 冒烟脚本 | `python tools/http_smoke.py --base http://127.0.0.1:8759`（须用 conda 的 python；控制台先 `chcp 65001`） |
+| 连续合成 | 20 连跑 0 失败，RSS 222 → 252 MB（首音色前缀 KV + job 表），队列归零 |
+| stdio 通道 | `tools/stdio_smoke.py`：ping/info/voices/speak/cancel/clone/关 stdin 退出全过；`begin` 恒在首个 `audio` 之前 |
+| 冒烟脚本 | `python tools/http_smoke.py --base http://127.0.0.1:8759` / `python tools/stdio_smoke.py`（须用 conda 的 python；控制台先 `chcp 65001`） |

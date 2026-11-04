@@ -80,6 +80,12 @@ jobs:
             if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
 
+      - name: stdio channel smoke (plugin path)
+        shell: pwsh
+        run: |
+          python tools/stdio_smoke.py --exe csrc\build\moss_tts.exe --models weights
+          if ($LASTEXITCODE -ne 0) { throw "stdio smoke tests failed" }
+
       - name: Pack full / lite / sdk
         shell: pwsh
         run: pwsh -NoProfile -File scripts/pack_release.ps1 -Mode all -Tag $env:MOSS_VERSION

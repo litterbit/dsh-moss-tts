@@ -127,7 +127,40 @@ prefill 期间（约 170 ms）不能中断。返回 `{"ok":true,"id":"..."}`。
 moss_clone / moss_text_tokens / moss_last_error / moss_version`。链接 `lib/moss_tts.lib`
 （静态 CRT，无第三方依赖）。`moss_speak` 的回调按块返回交织 int16 PCM。
 
-## 5. 命令行等价物
+## 5. stdio 通道（给插件用）
+
+宿主自己管理子进程时，不需要开端口：
+
+```bat
+moss_tts.exe --models models --stdio
+```
+
+stdin/stdout 上每行一个 JSON（UTF-8，`\n` 结尾）。请求：
+
+```json
+{"id":"r1","cmd":"speak","text":"你好","voice":"Junhao","seed":0,"max_frames":375}
+{"id":"r2","cmd":"cancel","job":"r1"}
+{"id":"r3","cmd":"voices"}          // 也有 "info" / "ping"
+{"id":"r4","cmd":"clone","name":"me","wav":"<base64 的 WAV>"}
+```
+
+响应（同一个 `id`）：
+
+```json
+{"id":"r1","type":"begin","job":"r1","format":{"encoding":"s16le","rate":48000,"channels":2}}
+{"id":"r1","type":"audio","pcm":"<base64，一个解码块一行>"}
+{"id":"r1","type":"done","job":{"state":"completed","frames":64,"audio_ms":5120,...}}
+{"id":"r1","type":"error","code":"busy","error":"队列已满"}
+```
+
+- `begin` 一定在第一个 `audio` 之前发出；`done` 一定在所有 `audio` 之后。
+- `speak` 是异步的：主线程继续读 stdin，所以合成过程中就能 `cancel`。
+- 关闭 stdin 服务就退出（退出码 0）。
+- 与 HTTP 完全同一套 Runtime：同一队列、同一取消语义、同一统计字段。
+
+Python 侧参考实现与回归脚本：`tools/stdio_smoke.py`。
+
+## 6. 命令行等价物
 
 ```bat
 :: 起服务（默认打开浏览器）
