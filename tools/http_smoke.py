@@ -116,7 +116,8 @@ def main() -> int:
         started = time.perf_counter()
         job_id, pcm, _ = client.stream({"text": "a long cancellation test sentence for smoke.",
                                         "voice": args.voice, "seed": 0, "greedy": True,
-                                        "max_frames": 375}, on_headers=on_headers)
+                                        # min_frames 保证任务不会在取消之前自然说完
+                                        "min_frames": 200, "max_frames": 375}, on_headers=on_headers)
         timing["eof"] = time.perf_counter() - started
         timing["pcm"] = len(pcm)
         done.set()
@@ -142,7 +143,8 @@ def main() -> int:
             if state.get("state") in ("cancelled", "completed", "failed"):
                 break
             time.sleep(0.05)
-        check("取消后状态为 cancelled", state.get("state") == "cancelled", str(state.get("state")))
+        check("取消后状态为 cancelled", state.get("state") == "cancelled",
+              json.dumps(state, ensure_ascii=False))
         check("取消后连接 1 秒内结束", eof_ms < 1000.0, f"{eof_ms:.0f} ms")
         check("取消后没有吐完整段音频", timing.get("pcm", 0) < 375 * 3840 * 4,
               f"{timing.get('pcm', 0)} bytes")

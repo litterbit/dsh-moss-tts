@@ -503,6 +503,12 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
             if (err) *err = "LLM 线程异常";
             return false;
         }
+        // 竞态：取消标志可能是 producer 先看到、在 consumer 退出循环之后才置位的。
+        // 这里再确认一次，否则一边断流一边记成 completed（取消接口就"看起来没生效"）。
+        if (!cancelled && stop_requested()) {
+            cancelled = true;
+            local.cancelled = true;
+        }
         if (cancelled) {
             pending.clear();
             break;
