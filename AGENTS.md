@@ -417,6 +417,8 @@ player.mjs   Windows 播放：写临时 WAV → System.Media.SoundPlayer.PlaySyn
   先用 `process.resourcesPath` 推，再退回写死路径；两边都失败就退化成恒等函数，保证插件至少能加载。
 - 两个回归脚本都在仓库里、都不需要 DSH：
   `node dsh-plugin/test-backend.mjs`（协议层 10 项）、`node dsh-plugin/test-plugin.mjs`（假 ctx 里注册并真合成）。
+- 一条命令复现整条发布门禁：`pwsh scripts/release_check.ps1`（编译 → 内核/分词回归 → selftest →
+  HTTP 冒烟 → stdio 冒烟 → node 插件测试 → 打包 → 校验 zip），顺序与 `release.yml` 一致。
 - 播放刻意选"整段合成完再播"：引 ffplay/sox 会加依赖，而 5 s 语音只要 0.76 s 合成；流式播放留到 v2。
 - 还没做"助手回复自动朗读"（需要宿主消息事件），现在只有显式工具调用。
 
