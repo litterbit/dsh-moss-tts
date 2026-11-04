@@ -1,53 +1,99 @@
-# dsh-moss-tts
+# MOSS-TTS CPU
 
-MOSS-TTS-Nano 的 **CPU 推理引擎**（纯 C++，零第三方依赖），最终形态是 DeepSeek TTS 插件；
-推理部分可以完全独立使用：文本进、音频出（整段 WAV 或流式 PCM），也支持参考音频做**音色克隆**。
+MOSS-TTS-Nano-100M 的原生 **C++ CPU 推理引擎**（Windows x64，零第三方运行时依赖）。
+文本进、音频出，流式出声，支持音色克隆；全部在本机计算，不联网、不上传文本。
 
-## 两个入口
+> 最终形态是 **DeepSeek Harness 的 TTS 插件**；这个仓库同时提供可独立使用的命令行、
+> 本地 HTTP 服务和一个浏览器试听台——三者跑的是同一个二进制、同一份权重。
 
-**1. 独立发版（推荐先看这个）**
+## 下载
+
+**[最新版本](https://github.com/litterbit/dsh-moss-tts/releases/latest)** · [项目门户](https://litterbit.github.io/dsh-moss-tts/)
+
+| 包 | 大小 | 说明 |
+|---|---|---|
+| `MossTTS-win-x64-full.zip` | ~159 MB | 程序 + 全部权重 + 18 个内置音色，解压即用 |
+| `MossTTS-win-x64-lite.zip` | ~1 MB | 只有程序与网页，权重另取（给插件/开发者） |
+| `MossTTS-sdk.zip` | ~1 MB | `tts.h` + `moss_tts.lib` + API 文档 |
+
+三步开始：下载 → 解压 → 双击 `moss_tts.exe`（无参数 = 起本地服务并打开浏览器）。
+首次运行 Windows 可能提示"已保护你的电脑"（未购买代码签名证书）：更多信息 → 仍要运行。
+
+## 性能（i5-14600KF，6P+8E，AVX2）
+
+| 项 | 数值 |
+|---|---|
+| RTF（5.12 s 音频） | **0.149**（4+6 线程，热缓存） |
+| 首块出声 | 75–130 ms |
+| LLM 解码 | 7.4 ms/帧（W8A16），prefill 167–176 ms |
+| 音频解码器 | 5.9 ms/帧（fp16，流式 chunk 8） |
+| 内存 / 依赖 | ~250 MB / 只有 KERNEL32、WS2_32、SHELL32 |
+
+精度：teacher forcing 下与 f16 参考相比 code 翻转 5.2%、KL 0.00145（听感无差异）。
+量化下限是 8 bit：Q4 全量化翻转 64~86%、响度失控，已排除。
+
+## 用法
+
+**本地服务 + 浏览器**
 
 ```bat
-cd dist\moss-tts-cpu-win64
-moss_tts.exe --models models --list-voices
-moss_tts.exe --models models --text "你好，我是语音助手。" --voice Junhao --out hello.wav
-moss_tts.exe --models models --text "..." --voice Xiaoyu --pcm-raw - > out.pcm
-moss_tts.exe --models models --selftest
+moss_tts.exe                     :: 起服务，自动打开 http://127.0.0.1:8759/
+moss_tts.exe --serve --port 9000 --no-open
 ```
 
-`moss_clone.exe` 把一段 PCM WAV 编码成几 KB 的音色档案，`moss_tts --profile` 用它合成；
-C API 见 `include/moss/tts.h`（静态库 `lib/moss_tts.lib`）。打包：`scripts\pack_release.bat zip`。
+**命令行**
 
-实测（4+6 线程）：5.12 s 中文 **764 ms、RTF 0.149、首音 128 ms**；ONNX 基线同句 2260 ms。
-
-**2. 开发（本项目里跑）**
-
-```bash
-cd csrc && build.bat                      # 产物在 csrc/build/
-build\moss_tts.exe --models ..\models --text "你好，世界。" --voice Junhao --out a.wav
-build\moss_spmtest.exe --vocab ..\weights\tokenizer.mossvocab --corpus tests\data\spm_corpus.txt --golden tests\data\spm_golden.txt
+```bat
+moss_tts.exe --text "你好，世界。" --voice Junhao --out hello.wav
+moss_tts.exe --text "..." --pcm-raw - > out.pcm      :: s16le / 48k / 立体声
+moss_tts.exe --list-voices
+moss_tts.exe --selftest
+moss_clone.exe --encoder models/encoder_f16.moss --in ref.wav --out models/voices/me.mossclone --name me
+moss_tts.exe --profile models/voices/me.mossclone --text "用自己的音色说话。" --out me.wav
 ```
 
-权重导出与对拍工具在 `tools/`（LLM/解码器/编码器/词表/内置音色/ONNX 参考）。ONNX 基线：`scripts/run_baseline.py`。
+**HTTP（只监听 127.0.0.1）**
+
+```
+GET  /api/v1/health | /info | /voices
+POST /api/v1/tts/stream      JSON -> chunked s16le（边算边拿）
+POST /api/v1/tts/wav         JSON -> 完整 WAV
+POST /api/v1/voices/clone?name=xxx
+GET  /api/v1/jobs/{id}       统计（首块/RTF/帧数/缓存命中）
+POST /api/v1/jobs/{id}/cancel
+```
+
+完整协议见 [`doc/api.md`](doc/api.md)，C 接口见 [`csrc/include/moss/tts.h`](csrc/include/moss/tts.h)。
+
+## 从源码构建
+
+```bat
+cd csrc
+build.bat                     :: 需要 VS 2022（Build Tools 即可）+ C++ 工作负载
+```
+
+产物在 `csrc/build/`。权重不进仓库，由 `tools/export_*.py` 从 PyTorch checkpoint 导出，
+或用 `scripts/fetch_weights.ps1` 从发布渠道拉取并校验。
+
+```bat
+pwsh scripts/fetch_weights.ps1 -Base https://huggingface.co/<owner>/moss-tts-nano-moss/resolve/<commit>
+pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0    :: -> dist/*.zip + sha256sums.txt
+python tools/http_smoke.py                            :: 服务端冒烟（流式/取消/安全）
+```
 
 ## 目录
 
 | 路径 | 内容 |
 |---|---|
-| `csrc/` | C++ 引擎（LLM / 解码器 / 编码器 / 分词器 / 引擎 / C API），`build.bat` 一键构建 |
-| `dist/` | 组装好的发布包（170 MB 目录 / 159 MB zip） |
-| `tools/` | 权重导出、prompt、ONNX 对拍、SPM 语料、打包辅助 |
-| `src/` `scripts/` | Python 侧（ONNX 基线封装、入口脚本） |
-| `vendor/` | 上游 ONNX 运行时（原样复制，只读） |
-| `doc/` | 设计 + 实测：`推理加速计划.md`（阶段 1~3）、`并行与发版计划.md`（阶段 A~E）、`release_readme.md` |
-| `AGENTS.md` | 约定、环境、已知坑、各项实测数字 |
+| `csrc/` | C++ 引擎：LLM / 解码器 / 编码器 / 分词器 / Runtime / HTTP 服务 / C ABI |
+| `web/app/` | 本地试听台（随包发布，由服务托管） |
+| `web/landing/` | GitHub Pages 门户 |
+| `tools/` | 权重导出、ONNX 对拍、冒烟测试、量化扫描（Python，离线用） |
+| `scripts/` | 权重下载、模型 lock、打包、发布 |
+| `doc/` | 设计文档与实测记录（`api.md`、`产品化与分发方案.md`、`1103定档-推理栈现状.md`） |
 
-## 关键数字（i5-14600KF）
+## 许可
 
-| 项 | 数值 |
-|---|---|
-| LLM（Q8_0_4x4） | 6.4 ms/帧，prefill 176 ms（带前缀缓存 34 ms） |
-| 解码器（fp16，流式 chunk 8） | 6.2 ms/帧，首块 35 ms，流式与整段**逐位一致** |
-| 端到端 RTF | 0.149（5.12 s）/ 0.178（13 s） |
-| 音色克隆 | 编码 10 s 参考约 1.2 s，档案几 KB |
-| 依赖 | 仅 `KERNEL32.dll`（静态 CRT） |
+代码与派生的模型权重均为 **Apache-2.0**：见 [`LICENSE`](LICENSE)、[`NOTICE`](NOTICE)。
+上游模型是 MOSS-TTS-Nano-100M；本项目对权重做了 int8 4×4 量化重排与 fp16 编解码器转换，
+改动细节写在同一份 NOTICE 里。与模型作者无隶属关系；请只使用你有权使用的声音做克隆。

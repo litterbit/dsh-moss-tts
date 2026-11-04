@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOSS-TTS CPU · 在你自己的电脑上跑语音合成</title>
+<meta name="description" content="MOSS-TTS-Nano-100M 的原生 C++ CPU 推理实现。无需 GPU、无需联网，下载即用，流式出声，支持音色克隆。">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e8ee; --muted: #9aa3b2;
+    --accent: #4f8cff; --ok: #35c07f; --warn: #e0a03a;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.65 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 56px 22px 80px; }
+  h1 { font-size: 40px; line-height: 1.15; margin: 0 0 14px; letter-spacing: -.5px; }
+  h2 { font-size: 20px; margin: 44px 0 14px; font-weight: 600; }
+  p { color: var(--muted); margin: 0 0 16px; }
+  .lede { font-size: 18px; color: #c3c9d4; max-width: 680px; }
+  .tag { display: inline-block; font-size: 12px; color: var(--accent); border: 1px solid #24405f;
+         background: #131c27; border-radius: 999px; padding: 3px 11px; margin-bottom: 18px; letter-spacing: .3px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 14px; margin: 28px 0 8px; }
+  .stat { flex: 1 1 180px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .stat b { display: block; font-size: 28px; line-height: 1.2; font-variant-numeric: tabular-nums; }
+  .stat span { font-size: 12px; color: var(--muted); letter-spacing: .3px; }
+  .note { font-size: 12px; color: #7e8798; margin-top: 6px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 26px 0 10px; }
+  a.btn { display: inline-block; text-decoration: none; border-radius: 10px; padding: 12px 22px; font-weight: 600; }
+  a.primary { background: var(--accent); color: #fff; }
+  a.primary:hover { filter: brightness(1.08); }
+  a.ghost { border: 1px solid var(--line); color: var(--text); }
+  a.ghost:hover { border-color: var(--accent); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px; margin: 16px 0; }
+  ol { margin: 0; padding-left: 22px; color: var(--muted); }
+  ol li { margin: 8px 0; }
+  code { background: #0d1016; border: 1px solid var(--line); border-radius: 5px; padding: 1px 6px; font-size: 13px; }
+  audio { width: 100%; margin-top: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+  .card b { display: block; margin-bottom: 6px; }
+  .card p { margin: 0; font-size: 14px; }
+  footer { margin-top: 56px; border-top: 1px solid var(--line); padding-top: 18px; font-size: 13px; color: #7e8798; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .warn { color: var(--warn); }
+  .kbd { font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="tag">Windows x64 · 纯 CPU · 离线 · 开源</div>
+  <h1>在你自己的电脑上<br>实时合成语音</h1>
+  <p class="lede">MOSS-TTS-Nano-100M 的原生 C++ 推理实现：一个 1 MB 的程序 + 一份量化权重，
+     解压双击就能用。文本不出本机，不需要 GPU、不需要 Python、不需要联网。</p>
+
+  <div class="stats">
+    <div class="stat"><b>0.15</b><span>RTF（5 秒音频算 0.76 秒）</span></div>
+    <div class="stat"><b>75–130<span style="font-size:15px"> ms</span></b><span>首块出声</span></div>
+    <div class="stat"><b>159<span style="font-size:15px"> MB</span></b><span>完整下载（含权重）</span></div>
+  </div>
+  <div class="note">性能实测于 i5-14600KF（6P+8E，4+6 线程）。弱一些的 CPU 会慢，但仍是"边说边算"的量级。</div>
+
+  <div class="actions">
+    <a class="btn primary" href="https://github.com/litterbit/dsh-moss-tts/releases/latest/download/MossTTS-win-x64-full.zip">
+      下载 Windows 完整包 · 159 MB
+    </a>
+    <a class="btn ghost" href="https://github.com/litterbit/dsh-moss-tts/releases/latest">全部版本</a>
+    <a class="btn ghost" href="https://github.com/litterbit/dsh-moss-tts">源码</a>
+  </div>
+  <div class="note">完整包自带权重与 18 个内置音色，解压即用。开发者可下载 <b>lite</b> 包（3 MB，不含权重）。</div>
+
+  <h2>三步开始</h2>
+  <div class="panel">
+    <ol>
+      <li>点上面的按钮，下载 <code>MossTTS-win-x64-full.zip</code>（159 MB，一次性）。</li>
+      <li>解压到任意目录（例如 <code>D:\MossTTS</code>），双击 <code>moss_tts.exe</code>。</li>
+      <li>浏览器会自动打开 <code>http://127.0.0.1:8759/</code>，输入文字、按 Ctrl+Enter 就能听到。</li>
+    </ol>
+    <p class="note" style="margin-top:14px">首次运行 Windows 可能弹"已保护你的电脑"（因为没有买代码签名证书）：
+       点「更多信息」→「仍要运行」即可。窗口不要关，关了服务就停了。</p>
+  </div>
+
+  <h2>先听一下</h2>
+  <div class="panel">
+    <b>内置音色 · Junhao</b>
+    <p style="margin:2px 0 0; font-size:13px">14.8 秒中文，含数字与长句。合成耗时 3.0 秒（RTF 0.203，冷启动）。</p>
+    <audio controls preload="none" src="assets/demo-junhao.wav"></audio>
+    <div style="height:16px"></div>
+    <b>克隆音色 · 7.8 秒参考音频</b>
+    <p style="margin:2px 0 0; font-size:13px">用 7.8 秒参考录音生成了几 KB 的音色档案，再合成这段。合成耗时 1.7 秒。</p>
+    <audio controls preload="none" src="assets/demo-clone.wav"></audio>
+  </div>
+
+  <h2>它能做什么</h2>
+  <div class="grid">
+    <div class="card"><b>流式出声</b><p>不等整段算完：先出第一块（0.08 秒音频）就开始播，边算边放，浏览器里听不出拼接。</p></div>
+    <div class="card"><b>音色克隆</b><p>给一段 5～15 秒的 WAV，本地编码成几 KB 的 <code>.mossclone</code>，之后随时复现同一音色。</p></div>
+    <div class="card"><b>完全离线</b><p>下载完成后拔网线照样用。文字、音频、克隆样本都只在本机内存里。</p></div>
+    <div class="card"><b>零依赖</b><p>静态链接，只依赖 Windows 自带的 DLL。不需要 VC++ 运行库、Python、ONNX。</p></div>
+    <div class="card"><b>可嵌入</b><p>本地 HTTP 接口（<code>/api/v1/*</code>）+ C ABI 静态库，别的程序可以直接调。</p></div>
+    <div class="card"><b>同一套推理</b><p>网页、命令行、未来的 DeepSeek Harness 插件用的是同一个二进制、同一份权重。</p></div>
+  </div>
+
+  <h2>接入自己的程序</h2>
+  <div class="panel">
+    <p style="margin-top:0">命令行：</p>
+    <p><code>moss_tts.exe --text "你好，世界。" --voice Junhao --out hello.wav</code></p>
+    <p>本地接口（服务默认监听 127.0.0.1:8759）：</p>
+    <p><code>POST /api/v1/tts/stream</code> → <code>chunked s16le / 48000 Hz / 立体声</code>；
+       <code>GET /api/v1/jobs/&lt;id&gt;</code> 查统计；<code>POST /api/v1/jobs/&lt;id&gt;/cancel</code> 取消。</p>
+    <p class="note">完整协议见仓库 <code>doc/api.md</code>；C 接口见 <code>include/moss/tts.h</code>。</p>
+  </div>
+
+  <h2>环境要求</h2>
+  <div class="panel">
+    <p style="margin:0">Windows 10 / 11 x64；支持 AVX2 的 CPU（2013 年后的 Intel / 2017 年后的 AMD 基本都有，
+       没有 AVX2 会自动降级到标量路径，速度约慢 2.6 倍）；内存 4 GB 起步（实际占用约 250 MB）；磁盘 200 MB。</p>
+  </div>
+
+  <footer>
+    <p>模型来自 <a href="https://huggingface.co/">MOSS-TTS-Nano-100M</a>（Apache-2.0），本项目做了 int8 4×4 量化重排、
+       fp16 编解码器与自有容器格式转换，改动说明见仓库 <code>NOTICE</code>。</p>
+    <p>本项目为独立实现，与模型作者无隶属关系。请只使用你有权使用的声音做克隆。</p>
+  </footer>
+</div>
+</body>
+</html>

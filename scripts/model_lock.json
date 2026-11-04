@@ -1,0 +1,119 @@
+{
+    "schema_version":  1,
+    "model_id":  "moss-tts-nano-100m-q8x4",
+    "model_revision":  "q8x4-f16-r1",
+    "model_format":  "moss-v1",
+    "min_engine_version":  "0.1.0",
+    "files":  [
+                  {
+                      "path":  "llm_q8x4.moss",
+                      "bytes":  125047648,
+                      "sha256":  "483324ea88cadde32246df51f9d263423086634b95dc8c8b99c81013715f8845"
+                  },
+                  {
+                      "path":  "decoder_f16.moss",
+                      "bytes":  23350368,
+                      "sha256":  "85ca9589e9ea3efa46e1503dc67820788a75bbf003272de9dd83ff8be6be980b"
+                  },
+                  {
+                      "path":  "encoder_f16.moss",
+                      "bytes":  22817728,
+                      "sha256":  "a70028fa93ed337faaa542ed182b8ba69ba68a1caa02d45f7baeed6321b43e53"
+                  },
+                  {
+                      "path":  "tokenizer.mossvocab",
+                      "bytes":  437029,
+                      "sha256":  "2b7a33c477420d573c1ec199f5b91ddd57c033417764ad41b0a9121b2957c22d"
+                  },
+                  {
+                      "path":  "voices/Adam.mossclone",
+                      "bytes":  1916,
+                      "sha256":  "79c223efb4397a50d48a81c6856533b1b79e5ab80353470c5ec018691063d8c4"
+                  },
+                  {
+                      "path":  "voices/Anon.mossclone",
+                      "bytes":  1532,
+                      "sha256":  "1287a8efaa8bdd896615a27fa2ae2f28e85c2f3ccfd65d8ff3ca228ff1a0b52f"
+                  },
+                  {
+                      "path":  "voices/Arisa.mossclone",
+                      "bytes":  2749,
+                      "sha256":  "48f769df5f170c7ce436c7046fae27017b22889abb1432367a12bb3f08bad388"
+                  },
+                  {
+                      "path":  "voices/Ava.mossclone",
+                      "bytes":  3163,
+                      "sha256":  "86fb98bdae192abfa491429f448d769ce8031c5ea7e0273449449de6e8dfd364"
+                  },
+                  {
+                      "path":  "voices/Bella.mossclone",
+                      "bytes":  1917,
+                      "sha256":  "1b37d5f6e9ad6a728da90fdc973ac45ebf4ba3debd0d09a77fa3831d1d852157"
+                  },
+                  {
+                      "path":  "voices/Junhao.mossclone",
+                      "bytes":  3166,
+                      "sha256":  "fa69dea3383a58f9db159e3715c5f0c0e8bcef046699a87b69afa54228e35303"
+                  },
+                  {
+                      "path":  "voices/Lingyu.mossclone",
+                      "bytes":  7006,
+                      "sha256":  "b3d67c78f04e4b7e2777d88188861122b78d5e928239bf7eee0e4e73ded9e51d"
+                  },
+                  {
+                      "path":  "voices/Mei.mossclone",
+                      "bytes":  1595,
+                      "sha256":  "4f2de31749eee8e7505ffa64b23773cf25d27ae8ed6725eaad0e5550ff9cbefb"
+                  },
+                  {
+                      "path":  "voices/Mortis.mossclone",
+                      "bytes":  1950,
+                      "sha256":  "1b47cecce80fa9018873f8dede075678c390cb7114d794c801ba05f9e851a60a"
+                  },
+                  {
+                      "path":  "voices/Nathan.mossclone",
+                      "bytes":  5406,
+                      "sha256":  "b2b77848ffc364ed92d98c6b2abc2e36eef61b9105c2197dfd8a4881f2dfacc5"
+                  },
+                  {
+                      "path":  "voices/Saki.mossclone",
+                      "bytes":  1052,
+                      "sha256":  "1cfc68bd3450eef51cf689a89c60562b0bf2b036bb678334a05d6d07a86b03b2"
+                  },
+                  {
+                      "path":  "voices/Soyo.mossclone",
+                      "bytes":  4028,
+                      "sha256":  "d09d8128f8e2acbb710c66b71930373e5ffaf4fd8234ab9ba1055e91953c089a"
+                  },
+                  {
+                      "path":  "voices/Trump.mossclone",
+                      "bytes":  3133,
+                      "sha256":  "c389ce08ba432599426736acc61949b5481f96a05a02a4d4ae82656ae3fcdf20"
+                  },
+                  {
+                      "path":  "voices/Umiri.mossclone",
+                      "bytes":  2493,
+                      "sha256":  "edd1c5e73ecbc05720b7f04799bc09e52bc6b01e635ceba5c5f9ed1ab249ba33"
+                  },
+                  {
+                      "path":  "voices/Weiguo.mossclone",
+                      "bytes":  4510,
+                      "sha256":  "8fa4db78ad45250288b06ca6dbcc86e39be555df22c6655f4d22a9dc290020fc"
+                  },
+                  {
+                      "path":  "voices/Xiaoyu.mossclone",
+                      "bytes":  5790,
+                      "sha256":  "ce49342e01cf2b6de8c777717c744ae777b6b48ab40a8367a0f41b07614f67fb"
+                  },
+                  {
+                      "path":  "voices/Yuewen.mossclone",
+                      "bytes":  3294,
+                      "sha256":  "6b15cde411a1becaa3e9cc4e2b65fbcef72785dc25d34996fea4304f6b5ea3be"
+                  },
+                  {
+                      "path":  "voices/Zhiming.mossclone",
+                      "bytes":  3167,
+                      "sha256":  "2dd4e8bd36a6e01802af817b859e1c951827776407bf4c3dce577b860035507b"
+                  }
+              ]
+}

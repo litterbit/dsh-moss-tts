@@ -1,0 +1,112 @@
+name: release
+
+# tag v* -> 编译、验证权重、真机冒烟、打包 full/lite/sdk、发布 Release。
+# 权重不重新生成：从 HuggingFace 指定 commit 下载，逐文件对照 scripts/model_lock.json 校验。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO || 'litterbit/moss-tts-nano-moss' }}
+  HF_MODEL_REVISION: ${{ vars.HF_MODEL_REVISION || 'main' }}
+  MOSS_VERSION: ${{ github.ref_name }}
+
+jobs:
+  release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (MSVC, static CRT)
+        shell: cmd
+        run: csrc\build.bat
+
+      - name: Kernel unit tests (AVX2 + scalar)
+        shell: cmd
+        run: |
+          csrc\build\test_kernels.exe
+          set MOSS_FORCE_SCALAR=1 && csrc\build\test_kernels.exe
+
+      - name: Tokenizer golden
+        shell: cmd
+        run: csrc\build\moss_spmtest.exe --vocab csrc\tests\data\tokenizer.mossvocab --corpus csrc\tests\data\spm_corpus.txt --golden csrc\tests\data\spm_golden.txt
+
+      - name: Version matches tag
+        shell: pwsh
+        run: |
+          $v = (& csrc\build\moss_tts.exe --version).Trim()
+          $tag = $env:MOSS_VERSION.TrimStart('v')
+          if ($v -ne $tag) { throw "csrc/include/moss/version.h says $v, tag says $tag" }
+          Write-Host "[ok] version $v"
+
+      - name: Cache weights
+        uses: actions/cache@v4
+        with:
+          path: weights
+          key: weights-${{ hashFiles('scripts/model_lock.json') }}
+
+      - name: Fetch weights (pinned revision)
+        shell: pwsh
+        run: |
+          $base = "https://huggingface.co/$env:HF_MODEL_REPO/resolve/$env:HF_MODEL_REVISION"
+          pwsh -NoProfile -File scripts/fetch_weights.ps1 -Base $base
+
+      - name: Real-model selftest
+        shell: cmd
+        run: csrc\build\moss_tts.exe --models weights --selftest
+
+      - name: HTTP smoke (stream / cancel / security)
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path "csrc/build/moss_tts.exe").Path
+          $proc = Start-Process -FilePath $exe -ArgumentList "--models","weights","--serve","--no-open","--web","web/app","--port","8759" -PassThru -NoNewWindow
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 120; $i++) {
+              try {
+                $r = Invoke-WebRequest -Uri "http://127.0.0.1:8759/api/v1/health" -TimeoutSec 2 -UseBasicParsing
+                if ($r.StatusCode -eq 200) { $ready = $true; break }
+              } catch { }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $ready) { throw "server did not become ready" }
+            python tools/http_smoke.py --base http://127.0.0.1:8759
+            if ($LASTEXITCODE -ne 0) { throw "smoke tests failed" }
+          } finally {
+            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
+          }
+
+      - name: Pack full / lite / sdk
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/pack_release.ps1 -Mode all -Tag $env:MOSS_VERSION
+
+      - name: Verify package contents
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [IO.Compression.ZipFile]::OpenRead((Resolve-Path "dist/MossTTS-win-x64-full.zip"))
+          try {
+            $names = $zip.Entries | ForEach-Object { $_.FullName }
+            $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/pcm-worklet.js",
+                          "models/llm_q8x4.moss","models/decoder_f16.moss","models/encoder_f16.moss",
+                          "models/tokenizer.mossvocab","models/manifest.json","LICENSE","NOTICE","README.txt")
+            $missing = $required | Where-Object { $names -notcontains $_ }
+            if ($missing) { throw "missing in full zip: $($missing -join ', ')" }
+            if (-not ($names | Where-Object { $_ -like "models/voices/*.mossclone" })) { throw "no voices in full zip" }
+            Write-Host "[ok] full zip has $($names.Count) entries"
+          } finally { $zip.Dispose() }
+          $mb = (Get-Item dist/MossTTS-win-x64-full.zip).Length / 1MB
+          if ($mb -lt 140) { throw "full zip too small: $mb MB" }
+
+      - name: Publish Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = $env:MOSS_VERSION
+          gh release create $tag dist/MossTTS-win-x64-full.zip dist/MossTTS-win-x64-lite.zip dist/MossTTS-sdk.zip dist/sha256sums.txt `
+            --title "MOSS-TTS CPU $tag" --generate-notes --verify-tag

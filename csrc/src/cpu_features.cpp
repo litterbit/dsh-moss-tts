@@ -2,6 +2,12 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -73,14 +79,37 @@ CpuFeatures detect() {
     return f;
 }
 
+// 物理核数：P 核带超线程、E 核不带，不能拿逻辑核数除以 2 估算
+int count_physical_cores() {
+#if defined(_WIN32)
+    DWORD len = 0;
+    // 第一次调用故意失败（ERROR_INSUFFICIENT_BUFFER）只为拿长度，返回值不能当失败处理
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (len == 0) return 0;
+    std::vector<char> buffer(len);
+    auto *info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data());
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, info, &len)) return 0;
+    int count = 0;
+    DWORD offset = 0;
+    while (offset < len) {
+        ++count;
+        offset += reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buffer.data() + offset)->Size;
+    }
+    return count;
+#else
+    return 0;
+#endif
+}
+
 }  // namespace
 
 const CpuFeatures &cpu_features() {
     static const CpuFeatures features = [] {
         CpuFeatures f = detect();
-        // 逻辑核数交给上层（std::thread::hardware_concurrency），这里只做保守估计
-        f.logical_cores = 1;
-        f.physical_cores = 1;
+        const int logical = static_cast<int>(std::thread::hardware_concurrency());
+        f.logical_cores = logical > 0 ? logical : 1;
+        const int physical = count_physical_cores();
+        f.physical_cores = physical > 0 ? physical : f.logical_cores;
         return f;
     }();
     return features;

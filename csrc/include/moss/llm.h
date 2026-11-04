@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <functional>
 #include <cstdint>
 #include <string>
@@ -80,6 +81,10 @@ public:
     // 导出每帧的结束判定余量（CSV: frame,logit_slot_minus_end）
     void set_gate_dump(const std::string &path) { gate_dump_path_ = path; }
 
+    // 取消：非空时每帧开头检查一次，置位就提前结束生成（返回已经生成的帧）。
+    // 粒度 = 1 帧（≈7.4 ms 计算），prefill 阶段不可中断（≈170 ms）。
+    void set_cancel_flag(const std::atomic<bool> *flag) { cancel_ = flag; }
+
     const float *hidden() const { return hidden_.data(); }
     int position() const { return pos_; }
     const std::string &info() const { return info_; }
@@ -144,6 +149,7 @@ private:
 
     GemvScratch scratch_;
     GemvPoolScratch pool_scratch_;
+    const std::atomic<bool> *cancel_ = nullptr;
     std::string info_;
     std::string logits_dump_path_;
     std::vector<float> logits_dump_;

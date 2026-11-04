@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOSS-TTS · 本地试听台</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --line: #262b36; --text: #e6e8ee; --muted: #9aa3b2;
+    --accent: #4f8cff; --ok: #35c07f; --warn: #e0a03a; --err: #ef5b5b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 26px 20px 60px; }
+  header { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 6px; }
+  h1 { font-size: 19px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted);
+          border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.err { background: var(--err); } .dot.busy { background: var(--warn); }
+  .sub { color: var(--muted); font-size: 13px; margin: 4px 0 20px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin: 0 0 6px; letter-spacing: .3px; }
+  textarea { width: 100%; min-height: 96px; resize: vertical; background: #0d1016; color: var(--text);
+             border: 1px solid var(--line); border-radius: 8px; padding: 11px; font: inherit; outline: none; }
+  textarea:focus { border-color: var(--accent); }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
+  .field { flex: 1 1 170px; min-width: 130px; }
+  select, input[type="number"], input[type="text"] {
+    width: 100%; background: #0d1016; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 8px 10px; font: inherit; outline: none;
+  }
+  input[type="range"] { width: 100%; accent-color: var(--accent); }
+  .actions { display: flex; align-items: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  button { background: #1d222c; color: var(--text); border: 1px solid var(--line); border-radius: 9px;
+           padding: 9px 16px; font: inherit; cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { border-color: #5a2b2b; color: #ffb3b3; }
+  .status { color: var(--muted); font-size: 13px; }
+  .status.err { color: var(--err); } .status.ok { color: var(--ok); }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip { background: #0d1016; border: 1px solid var(--line); border-radius: 999px;
+          padding: 3px 11px; font-size: 12px; color: var(--muted); }
+  .chip b { color: var(--text); font-weight: 600; }
+  .hist { display: flex; flex-direction: column; gap: 8px; }
+  .hist .item { display: flex; align-items: center; gap: 12px; background: #0d1016; border: 1px solid var(--line);
+                border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  .hist .item:hover { border-color: var(--accent); }
+  .hist .txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+  .hist .meta { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .meter { height: 4px; background: #0d1016; border-radius: 3px; overflow: hidden; margin-top: 10px; }
+  .meter > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>MOSS-TTS · 本地试听台</h1>
+    <span class="pill"><span class="dot" id="dot"></span><span id="engine">正在检测本地引擎…</span></span>
+    <span class="pill" id="perf" hidden></span>
+  </header>
+  <div class="sub">文本进、音频出，全部在你这台电脑的 CPU 上算，不上传任何内容。首块出声约 0.1 s，速度约为实时的 7 倍。</div>
+
+  <div class="panel">
+    <label for="text">文本</label>
+    <textarea id="text">你好，我是 MOSS 语音助手。这段语音完全在你的电脑上合成，不需要联网，也不会把文字发到任何地方。</textarea>
+
+    <div class="row">
+      <div class="field">
+        <label for="voice">音色</label>
+        <select id="voice"></select>
+      </div>
+      <div class="field">
+        <label for="seed">种子（同种子可复现）</label>
+        <input id="seed" type="number" value="0" min="0" step="1">
+      </div>
+      <div class="field">
+        <label for="frames">帧上限（1 帧 = 80 ms）</label>
+        <input id="frames" type="number" value="375" min="8" step="8">
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label for="temp">温度 <span id="temp-v">0.80</span></label>
+        <input id="temp" type="range" min="0.3" max="1.5" step="0.05" value="0.8">
+      </div>
+      <div class="field">
+        <label for="topp">top-p <span id="topp-v">0.95</span></label>
+        <input id="topp" type="range" min="0.5" max="1" step="0.01" value="0.95">
+      </div>
+    </div>
+
+    <div class="actions">
+      <button class="primary" id="go">生成并播放</button>
+      <button class="danger" id="stop" disabled>停止</button>
+      <button id="save" disabled>保存 WAV</button>
+      <span class="status" id="status">就绪</span>
+    </div>
+    <div class="meter"><i id="level"></i></div>
+    <div class="chips" id="chips" hidden></div>
+    <div class="hint">快捷键 Ctrl + Enter 生成。长文本会自动按句切分，段间插入自然停顿。</div>
+  </div>
+
+  <div class="panel">
+    <label>克隆音色（上传一段 5~15 秒的 WAV，本地编码，几秒钟）</label>
+    <div class="row" style="margin-top:0">
+      <div class="field" style="flex:2 1 260px">
+        <input id="clone-file" type="file" accept=".wav,audio/wav" style="color:var(--muted)">
+      </div>
+      <div class="field">
+        <input id="clone-name" type="text" placeholder="音色名（英文/数字/_/-）">
+      </div>
+      <div class="field" style="flex:0 0 auto">
+        <button id="clone-go">创建音色</button>
+      </div>
+    </div>
+    <div class="hint">参考音频只在本机处理；生成的音色档案只有几 KB，保存在本机用户目录。</div>
+  </div>
+
+  <div class="panel">
+    <label>最近生成</label>
+    <div class="hist" id="hist"><div class="hint">还没有生成记录。</div></div>
+  </div>
+
+  <div class="hint">引擎：MOSS-TTS-Nano-100M（int8 4×4 权重 / W8A16 解码 / fp16 解码器）。<a href="/api/v1/info" target="_blank" rel="noreferrer">查看运行时信息</a></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

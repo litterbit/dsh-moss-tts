@@ -1,4 +1,4 @@
-﻿// moss_tts：产品 CLI（文本 -> 音频）。全链路在 TtsEngine 里：分词 -> prompt -> LLM 出码 -> 流式解码。
+// moss_tts：产品 CLI（文本 -> 音频）。全链路在 TtsEngine 里：分词 -> prompt -> LLM 出码 -> 流式解码。
 //
 //   moss_tts --models models --text "你好，世界。" --out hello.wav
 //   moss_tts --models models --text "..." --voice Xiaoyu --pcm-raw - > out.pcm
@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -16,7 +17,14 @@
 
 #include "moss/cpu_features.h"
 #include "moss/engine.h"
+#include "moss/http_server.h"
+#include "moss/runtime.h"
+#include "moss/version.h"
 #include "moss/wav.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 using namespace moss;
 
@@ -26,6 +34,58 @@ std::string dir_join(const std::string &dir, const std::string &name) {
     if (dir.empty()) return name;
     if (dir.back() == '/' || dir.back() == '\\') return dir + name;
     return dir + "/" + name;
+}
+
+std::string exe_dir() {
+#ifdef _WIN32
+    wchar_t buf[4096];
+    const DWORD n = GetModuleFileNameW(nullptr, buf, static_cast<DWORD>(std::size(buf)));
+    if (n == 0) return {};
+    const int need = WideCharToMultiByte(CP_UTF8, 0, buf, static_cast<int>(n), nullptr, 0, nullptr, nullptr);
+    if (need <= 0) return {};
+    std::string path(static_cast<size_t>(need), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, buf, static_cast<int>(n), path.data(), need, nullptr, nullptr);
+    const size_t slash = path.find_last_of("\\/");
+    return slash == std::string::npos ? std::string() : path.substr(0, slash);
+#else
+    return ".";
+#endif
+}
+
+std::string env_or_empty(const char *name) {
+    const char *v = std::getenv(name);
+    return v ? std::string(v) : std::string();
+}
+
+bool is_dir(const std::string &path) {
+    std::error_code ec;
+    return std::filesystem::is_directory(path, ec);
+}
+
+// 模型目录查找顺序：--models 显式 > 程序同级的 models/ > %LOCALAPPDATA%\MossTTS\models
+std::string resolve_models_dir(const std::string &explicit_dir) {
+    if (!explicit_dir.empty()) return explicit_dir;
+    const std::string beside = dir_join(exe_dir(), "models");
+    if (is_dir(beside)) return beside;
+#ifdef _WIN32
+    const std::string local = env_or_empty("LOCALAPPDATA");
+    if (!local.empty()) {
+        const std::string shared = dir_join(local, "MossTTS/models");
+        if (is_dir(shared)) return shared;
+    }
+#endif
+    return "models";
+}
+
+std::string resolve_data_dir(const std::string &models_dir) {
+    // 便携优先：模型在程序旁边时，缓存/用户音色也放旁边（删目录即干净卸载）
+    const std::string beside = dir_join(exe_dir(), "models");
+    if (models_dir == beside) return dir_join(exe_dir(), "userdata");
+#ifdef _WIN32
+    const std::string local = env_or_empty("LOCALAPPDATA");
+    if (!local.empty()) return dir_join(local, "MossTTS");
+#endif
+    return dir_join(models_dir, "..");
 }
 
 bool file_exists(const std::string &path) {
@@ -52,22 +112,26 @@ bool write_pcm16(const std::string &path, const std::vector<float> &interleaved)
 
 void print_usage() {
     std::fprintf(stderr,
-                 "用法: moss_tts --models <dir> --text <文本> [--out x.wav] [--pcm-raw f|-]\n"
-                 "      [--voice Junhao | --profile x.mossclone] [--threads 4] [--decode-threads 6]\n"
-                 "      [--chunk 8] [--a16 off|decode|all] [--seed 0] [--greedy] [--frames 375] [--no-cache]\n      [--temp 0.8] [--top-k 25] [--top-p 0.95] [--rep 1.2] [--greedy-frames 0]\n"
-                 "      [--list-voices] [--selftest]\n"
-                 "      --llm/--decoder/--encoder/--vocab/--voices/--cache 可覆盖 --models 下的默认路径\n");
+                 "用法:\n"
+                 "  moss_tts [--serve] [--port 8759] [--no-open] [--web dir] [--data dir]\n"
+                 "           --models <dir> --text <文本> [--out x.wav] [--pcm-raw f|-]\n"
+                 "      [--voice Junhao | --profile x.mossclone] [--threads 0=auto] [--decode-threads 0=auto]\n"
+                 "      [--chunk 8] [--a16 off|decode|all] [--seed 0] [--greedy] [--frames 375] [--no-cache]\n"
+                 "      [--temp 0.8] [--top-k 25] [--top-p 0.95] [--rep 1.2] [--greedy-frames 0]\n"
+                 "      [--list-voices] [--selftest] [--version]\n"
+                 "      --llm/--decoder/--encoder/--vocab/--voices/--cache 可覆盖 --models 下的默认路径\n"
+                 "  不带参数 = 启动本地服务并打开浏览器。\n");
 }
 
 }  // namespace
 
 int run(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
-    std::string models = "models";
+    std::string models;
     std::string llm, decoder, encoder, vocab, voices, cache;
     std::string text, text_file, out_path, raw_path, voice = "Junhao", profile;
     std::string a16 = "decode";  // 发布默认：吐 token 阶段 A16
-    int threads = 4;
+    int threads = 0;             // 0 = 按物理核自动
     int decode_threads = 0;
     int chunk = 8;
     int frames = 375;
@@ -81,6 +145,12 @@ int run(int argc, char **argv) {
     bool use_cache = true;
     bool list_voices = false;
     bool selftest = false;
+    bool serve = false;
+    bool open_browser = true;
+    bool show_version = false;
+    bool cache_explicit = false;
+    int serve_port = 8759;
+    std::string web_dir, data_dir, allow_origin;
 
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -91,7 +161,7 @@ int run(int argc, char **argv) {
         else if (a == "--encoder") encoder = next();
         else if (a == "--vocab") vocab = next();
         else if (a == "--voices") voices = next();
-        else if (a == "--cache") cache = next();
+        else if (a == "--cache") { cache = next(); cache_explicit = true; }
         else if (a == "--text") text = next();
         else if (a == "--text-file") text_file = next();
         else if (a == "--out") out_path = next();
@@ -113,12 +183,26 @@ int run(int argc, char **argv) {
         else if (a == "--rep") rep = std::stof(next());
         else if (a == "--list-voices") list_voices = true;
         else if (a == "--selftest") selftest = true;
+        else if (a == "--serve") serve = true;
+        else if (a == "--port") serve_port = std::stoi(next());
+        else if (a == "--no-open") open_browser = false;
+        else if (a == "--web") web_dir = next();
+        else if (a == "--data") data_dir = next();
+        else if (a == "--allow-origin") allow_origin = next();
+        else if (a == "--version") show_version = true;
         else {
             std::fprintf(stderr, "未知参数: %s\n", a.c_str());
             print_usage();
             return 1;
         }
     }
+
+    if (show_version) {
+        std::printf("%s\n", MOSS_VERSION);
+        return 0;
+    }
+    if (argc == 1) serve = true;  // 双击 = 起服务并打开浏览器
+    models = resolve_models_dir(models);
 
     if (llm.empty()) llm = dir_join(models, "llm_q8x4.moss");
     if (decoder.empty()) decoder = dir_join(models, "decoder_f16.moss");
@@ -152,15 +236,16 @@ int run(int argc, char **argv) {
         std::printf("]}\n");
         return names.empty() ? 2 : 0;
     }
-    if (text.empty() && !selftest) {
+    if (!serve && text.empty() && !selftest) {
         print_usage();
         return 1;
     }
-    if (!selftest && out_path.empty() && raw_path.empty()) {
+    if (!serve && !selftest && out_path.empty() && raw_path.empty()) {
         std::fprintf(stderr, "至少要给 --out 或 --pcm-raw 之一\n");
         return 1;
     }
-    if (decode_threads <= 0) decode_threads = threads;
+    if (!serve && threads <= 0) threads = 4;
+    if (!serve && decode_threads <= 0) decode_threads = threads;
     // W8A16：off / decode / all（见 gemv.cpp 的 act16_enabled）
     _putenv_s("MOSS_A16", a16 == "off" ? "" : a16.c_str());
     if (!file_exists(llm)) {
@@ -179,6 +264,48 @@ int run(int argc, char **argv) {
     const CpuFeatures &feat = cpu_features();
     std::fprintf(stderr, "cpu=%s avx2=%d backend=%s llm_threads=%d decode_threads=%d\n", feat.brand.c_str(),
                  feat.avx2, feat.gemv_backend(), threads, decode_threads);
+
+    if (serve) {
+        std::string serve_err;
+        const std::string resolved_data = data_dir.empty() ? resolve_data_dir(models) : data_dir;
+        const std::string user_voices = dir_join(resolved_data, "voices/user");
+        // 服务模式：缓存统一放用户数据目录，程序目录保持只读也能跑
+        if (!cache_explicit) cache = dir_join(resolved_data, "cache");
+        std::error_code ec;
+        std::filesystem::create_directories(user_voices, ec);
+        std::filesystem::create_directories(cache, ec);
+
+        RuntimeOptions ro;
+        ro.llm_path = llm;
+        ro.decoder_path = decoder;
+        ro.encoder_path = encoder;
+        ro.tokenizer_path = vocab;
+        ro.voices_dir = voices;
+        ro.user_voices_dir = user_voices;
+        ro.cache_dir = cache;
+        ro.manifest_path = dir_join(models, "manifest.json");
+        ro.llm_threads = threads;  // 0 = 自动
+        ro.decode_threads = decode_threads;
+
+        Runtime runtime;
+        if (!runtime.load(ro, &serve_err)) {
+            std::fprintf(stderr, "%s\n", serve_err.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "data=%s\n", resolved_data.c_str());
+
+        ServerOptions so;
+        so.web_dir = web_dir.empty() ? dir_join(exe_dir(), "web") : web_dir;
+        so.port = serve_port;
+        so.open_browser = open_browser;
+        if (!allow_origin.empty()) so.allow_origins.push_back(allow_origin);
+        std::string url;
+        if (!serve_forever(runtime, so, &url, &serve_err)) {
+            std::fprintf(stderr, "%s\n", serve_err.c_str());
+            return 1;
+        }
+        return 0;
+    }
 
     EngineOptions options;
     options.llm_path = llm;
@@ -274,6 +401,7 @@ int run(int argc, char **argv) {
     std::printf("  \"first_audio_ms\": %.1f,\n", stats.first_audio_ms);
     std::printf("  \"audio_seconds\": %.3f,\n", stats.audio_seconds);
     std::printf("  \"total_ms\": %.1f,\n", stats.total_ms);
+    std::printf("  \"prefix_cache_hit\": %s,\n", stats.prefix_cache_hit ? "true" : "false");
     std::printf("  \"rtf\": %.4f,\n", stats.total_ms / std::max(1e-3, stats.audio_seconds * 1000.0));
     std::printf("  \"greedy\": %s,\n", greedy ? "true" : "false");
     std::printf("  \"seed\": %llu\n", static_cast<unsigned long long>(seed));

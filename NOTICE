@@ -1,0 +1,24 @@
+MOSS-TTS CPU 推理引擎
+Copyright (c) 2026 dsh-moss-tts contributors
+
+本分发包含两部分内容，来源与改动如下。
+
+1. 本项目的源代码（csrc/ 等）
+   - 以 Apache License 2.0 授权，全文见同目录 LICENSE。
+   - 这是 MOSS-TTS-Nano-100M 的独立 C++ 推理实现（CPU，Windows x64）。
+
+2. 模型权重与音色档案（models/*.moss、models/*.mossvocab、models/voices/*.mossclone）
+   - 由上游 MOSS-TTS-Nano-100M（https://huggingface.co/ ，Apache-2.0）转换而来，
+     上游许可全文同样适用于这些派生产物。
+   - 本项目对权重所做的改动：
+       * LLM 权重：int8 Q8_0 4x4 重排量化（每 32 元素一组 scale，4 行一组重排）
+       * 音频解码器 / 编码器：fp16
+       * 全部权重改写为本项目自定义的 .moss 容器格式
+       * 音色档案为参考音频经编码器得到的 VQ 码，.mossclone 容器
+   - 未对模型结构、训练数据或参数取值做任何"再训练"。
+
+3. 第三方
+   - 无第三方运行时依赖：发布包中的可执行文件静态链接 C/C++ 运行时，
+     在 Windows 上只依赖系统自带的 KERNEL32.dll / WS2_32.dll / SHELL32.dll 等。
+
+本项目与 MOSS 模型作者无隶属关系，未获得其背书。

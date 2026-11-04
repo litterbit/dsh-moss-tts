@@ -642,6 +642,7 @@ std::vector<Row> LlmModel::generate(int max_frames, const SampleParams &audio_pa
 
     for (int f = 0; f < max_frames; ++f) {
         if (pos_ >= kMaxCtx) break;
+        if (cancel_ != nullptr && cancel_->load(std::memory_order_relaxed)) break;
         const auto t_local0 = Clock::now();
 
         local_reset();

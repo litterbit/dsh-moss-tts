@@ -1,4 +1,4 @@
-﻿#include "moss/engine.h"
+#include "moss/engine.h"
 
 #include <algorithm>
 #include <chrono>
@@ -205,13 +205,19 @@ bool TtsEngine::ensure_prefix_kv(std::string *err) {
         std::filesystem::create_directories(std::filesystem::path(cache).parent_path(), ec);
     }
     if (!cache.empty()) {
+        std::error_code exists_ec;
+        const bool existed = std::filesystem::exists(cache, exists_ec);
         if (llm_->load_prefix(cache, prefix_rows_, err)) {
             prefix_ready_ = true;
             prefix_from_cache_ = true;
             return true;
         }
         // 缓存不可用（首次运行/换了权重/换了音色）就重算，并在 stderr 说明
-        std::fprintf(stderr, "[prefix] 未使用缓存（%s），重算\n", err && !err->empty() ? err->c_str() : "?");
+        if (!existed) {
+            std::fprintf(stderr, "[prefix] 首次使用该音色（无缓存），重算\n");
+        } else {
+            std::fprintf(stderr, "[prefix] 未使用缓存（%s），重算\n", err && !err->empty() ? err->c_str() : "?");
+        }
     }
     llm_->prefill(prefix_rows_, 0);
     llm_->snapshot_prefix();
@@ -379,6 +385,7 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
     SynthStats local;
     const auto t_all = Clock::now();
     if (!ensure_prefix_kv(err)) return false;
+    local.prefix_cache_hit = prefix_from_cache_;
     if (!spm_) {
         if (err) *err = "没有加载分词器（--tokenizer）";
         return false;
@@ -404,6 +411,16 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
     const int prefix_pos = static_cast<int>(prefix_rows_.size());
     const int sample_rate = 48000;
 
+    // 取消：LLM 每帧检查一次；解码在块边界检查（1 块 = chunk_frames 帧，默认 8 帧）。
+    // prefill 不可中断（≈170 ms），这是取消延迟的上界来源之一。
+    llm_->set_cancel_flag(options.cancel);
+    // 解码器是流式的：每次合成都必须从干净的窗口开始，否则上一句的 KV 会污染下一句。
+    // 常驻进程里这是正确性（可复现性）的前提，第一次调用时等于空操作。
+    decoder_->reset_stream();
+    auto stop_requested = [&]() {
+        return options.cancel != nullptr && options.cancel->load(std::memory_order_relaxed);
+    };
+
     auto emit_silence = [&](double seconds) {
         if (!options.on_audio || seconds <= 0.0) return;
         const int frames = static_cast<int>(seconds * sample_rate);
@@ -413,6 +430,10 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
     };
 
     for (size_t ci = 0; ci < chunks.size(); ++ci) {
+        if (stop_requested()) {
+            local.cancelled = true;
+            break;
+        }
         const std::vector<int32_t> ids = spm_->encode(chunks[ci]);
         if (ids.empty()) continue;
         local.text_tokens += static_cast<int>(ids.size());
@@ -466,7 +487,14 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
         };
 
         Row row;
+        bool cancelled = false;
         while (queue.pop(&row)) {
+            if (stop_requested()) {
+                // 丢掉后面的帧，但仍然排空队列，否则 producer 会卡在 push 上
+                cancelled = true;
+                local.cancelled = true;
+                continue;
+            }
             pending.push_back(row);
             decode_pending(false);
         }
@@ -475,11 +503,15 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
             if (err) *err = "LLM 线程异常";
             return false;
         }
+        if (cancelled) {
+            pending.clear();
+            break;
+        }
         decode_pending(true);
         if (local.first_chunk_frames == 0) local.first_chunk_frames = local.frames;
 
         // 段间停顿
-        if (ci + 1 < chunks.size()) {
+        if (ci + 1 < chunks.size() && !stop_requested()) {
             const int words = static_cast<int>(std::count_if(
                 chunks[ci].begin(), chunks[ci].end(), [](char c) { return c == ' '; })) + 1;
             emit_silence(words <= 4 ? kPauseShortSeconds : kPauseLongSeconds);
@@ -487,6 +519,7 @@ bool TtsEngine::synthesize(const std::string &text, const SynthOptions &options,
     }
 
     local.total_ms = ms_since(t_all);
+    llm_->set_cancel_flag(nullptr);
     if (stats) *stats = local;
     return true;
 }

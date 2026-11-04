@@ -1,5 +1,6 @@
-﻿#pragma once
+#pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -40,6 +41,8 @@ struct SynthOptions {
     float top_p = 0.95f;
     float repetition_penalty = 1.2f;
     int max_text_tokens = 75;
+    // 取消标志：非空时每帧检查，置位就提前收尾。检查粒度 = 1 个生成帧（或 1 个 prefill）。
+    const std::atomic<bool> *cancel = nullptr;
     // 交织 float32 音频回调，在调用线程上同步调用
     std::function<void(const float *, int)> on_audio;
 };
@@ -57,6 +60,7 @@ struct SynthStats {
     double total_ms = 0.0;
     double audio_seconds = 0.0;
     bool prefix_cache_hit = false;
+    bool cancelled = false;
 };
 
 // 端到端引擎：文本 -> token -> prompt -> LLM 出码 -> 解码器流式出音。

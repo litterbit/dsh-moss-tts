@@ -1,0 +1,45 @@
+name: ci
+
+# 编译 + 数值/分词回归。不下载权重、不打包、不发布，所以很快。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build (MSVC, static CRT)
+        shell: cmd
+        run: csrc\build.bat
+
+      - name: Kernel unit tests (AVX2 path)
+        shell: cmd
+        run: csrc\build\test_kernels.exe
+
+      - name: Kernel unit tests (scalar fallback)
+        shell: cmd
+        env:
+          MOSS_FORCE_SCALAR: "1"
+        run: csrc\build\test_kernels.exe
+
+      - name: Tokenizer golden (61 sentences)
+        shell: cmd
+        run: csrc\build\moss_spmtest.exe --vocab csrc\tests\data\tokenizer.mossvocab --corpus csrc\tests\data\spm_corpus.txt --golden csrc\tests\data\spm_golden.txt
+
+      - name: Version stamp
+        shell: cmd
+        run: csrc\build\moss_tts.exe --version
+
+      - name: Upload exe artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: moss-tts-exes
+          path: |
+            csrc/build/moss_tts.exe
+            csrc/build/moss_clone.exe
+          if-no-files-found: error

@@ -312,3 +312,85 @@ tokenizer.mossvocab + voices/*.mossclone + include/moss/tts.h + lib/moss_tts.lib
 
 旧实现用 thread_local 池 + 全局 `parallel()`，`--pipeline 1` 在 threads≥2 时死锁；现在按上文「线程模型」重做。
 结果：10 连跑与 1+1 / 2+2 / 8+8 都正常，输出与串行逐位一致（见「线程模型」）。
+
+## 产品层（v0.1 发布形态，2026-11-04）
+
+### 三个外壳，一套推理
+
+```
+moss_tts.exe
+├── 无参数 / --serve  → Runtime（队列/取消/统计）← JsonHttpServer（127.0.0.1）← web/app（浏览器）
+├── --text ...        → TtsEngine（CLI，单次进程）
+└── （后续）--stdio    → 同一个 Runtime，给 DSH 插件用
+```
+
+- `csrc/src/runtime.cpp`：单工作线程 + 有界队列（默认 4）+ job 表（TTL 10 min / 32 条）+ 取消 + 统计 + 音色枚举/克隆 + 路径解析。传输层只做编解码，**模型状态只在这里**。
+- `csrc/src/server.cpp`：Winsock HTTP/1.1，只绑 `127.0.0.1`；`SO_EXCLUSIVEADDRUSE`（Windows 上 `SO_REUSEADDR` 允许多个进程绑同一端口，别用）；端口 8759→8763 顺延。
+- `csrc/src/json.cpp`：最小 JSON（深度 8、字符串 64 KB、拒绝 NaN/Inf、支持 `\uXXXX` 代理对）。零依赖是硬约束，不引 cpp-httplib / nlohmann。
+
+### API v1（细节见 `doc/api.md`）
+
+`/api/v1/{health,info,voices}`、`POST /tts/stream`（chunked s16le 48k 立体声）、`POST /tts/wav`、
+`POST /voices/clone?name=`、`GET /jobs/{id}`、`POST /jobs/{id}/cancel`。
+音频头是 `application/octet-stream` + `X-Moss-Audio-Format: s16le;rate=48000;channels=2`，
+**不要**用 `audio/L16`（RFC 2586 是 big-endian）。
+
+### 安全模型
+
+只绑 loopback + `Host` 白名单（`127.0.0.1:<port>` / `localhost:<port>` / `[::1]:<port>`，挡 DNS rebinding）
++ `Origin` 精确匹配（默认只允许本服务自己的 origin，`--allow-origin` 可追加）
++ POST 强制 JSON/WAV Content-Type + 文本 4000 字符 / JSON 256 KB / 上传 20 MB 上限。
+**不做 token**：同源页面、插件和 curl 都要能直连，token 在这个威胁模型下不增加实质防护，
+却会破坏"双击即用"和第三方调用。
+
+### 数据目录与便携
+
+查找顺序 `--models` → exe 同级 `models/` → `%LOCALAPPDATA%\MossTTS\models`。
+便携模式（models 在旁边）时用户数据写 `exe/userdata/`；否则写 `%LOCALAPPDATA%\MossTTS\`。
+`--serve` 的缓存固定进 `<data>/cache/`（`--cache` 显式覆盖），CLI 仍用 `models/cache/`。
+用户克隆音色写 `<data>/voices/user/`，与内置 `models/voices/` 物理隔离，升级覆盖不到。
+
+### 打包与发布
+
+```bat
+cd csrc && build.bat                                    :: 新增 json/runtime/server + ws2_32/shell32
+pwsh scripts/make_model_lock.ps1 -Weights weights       :: 生成 scripts/model_lock.json（信任根）
+pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0     :: dist/MossTTS-win-x64-{full,lite}.zip + sdk
+```
+
+- 资产名**固定不带版本**，所以 `releases/latest/download/MossTTS-win-x64-full.zip` 永久有效。
+- `scripts/model_lock.json` 是**已提交的信任根**：打包前逐个校验大小 + sha256。
+  CI 里绝不能"下载完再生成清单再自校验"，那是循环论证。
+- 发版流水线：`ci.yml`（编译+内核/分词回归，不下载权重）、`release.yml`（tag → 拉固定 revision 权重 →
+  校验 → 真模型 selftest + `tools/http_smoke.py` → 打包 → `gh release create`）、`pages.yml`（只发 `web/landing`）。
+- `build.bat` 已改成 vswhere 回退（本地走写死路径的快路径），GitHub Runner 上直接可跑。
+
+### 这一层踩到的坑（都已填）
+
+1. **解码器跨请求状态泄漏**：`AudioDecoder` 是流式的，`synthesize` 不 `reset_stream()` 的话，
+   常驻进程里第二句会带着上一句的 KV，导致同一文本同一 seed 每次结果都不同。
+   CLI 每进程只跑一次，所以以前没暴露。现在 `synthesize` 入口统一 reset。
+2. **POST 没有 Content-Length 要按 0 处理**：`/jobs/{id}/cancel` 就是无体 POST，早期版本直接 400，
+   浏览器点"停止"实际没取消。
+3. **`raw_json` 不做包裹**：`voices_json` / `job_json` 返回的是片段，忘补花括号会得到非法 JSON
+   （picker 报 "Extra data: line 1 column 10"）。
+4. **PowerShell 5.1 读无 BOM 的 UTF-8 `.ps1` 会按 ANSI 解码**，中文字节吃掉引号 → here-string 报
+   "missing terminator"。`.ps1` 一律存 UTF-8 **with BOM**；`.bat` 仍保持纯 ASCII。
+5. **本机 `%TEMP%` / `%LOCALAPPDATA%` 在 DSH 沙箱里写不进去**：测试一律用项目内 `runs/`；
+   前缀缓存写不进去时引擎会打印一行并继续重算，不影响合成。
+6. **`GetLogicalProcessorInformationEx` 第一次调用必然返回 FALSE**（`ERROR_INSUFFICIENT_BUFFER`），
+   只看 `len` 不看返回值；之前 `physical_cores` 直接写死 1，自动线程数会退化成 1+1。
+7. **浏览器到 loopback 的通道**：https 页面 fetch `http://127.0.0.1` 是允许的（loopback 被视为可信来源），
+   但 Chrome 的 Private Network Access 预检要求服务端回 `Access-Control-Allow-Private-Network: true`；
+   `ws://` 没有这个豁免，所以协议只用 HTTP chunked。v0.1 默认不放开跨域（门户页只做下载/跳转）。
+
+### 验收（已实测）
+
+| 项 | 结果 |
+|---|---|
+| CLI 与 HTTP 的原始 PCM | SHA256 **相同**（同参数、同 seed、greedy） |
+| 常驻进程内连续请求 | 逐字节一致（先修好了上面的解码器泄漏） |
+| 取消 | 15~20 ms 内连接结束，状态 `cancelled`，不吐完整段 |
+| 安全 | 错误 Host / 跨源 Origin / 目录穿越 / 超大 JSON / 坏 JSON / 错误方法 全部 4xx |
+| 包内运行 | `runs/pkg` 解压后 `--version`/`--selftest`/`--serve` 全部正常，模型信息来自 `models/manifest.json` |
+| 冒烟脚本 | `python tools/http_smoke.py --base http://127.0.0.1:8759`（须用 conda 的 python；控制台先 `chcp 65001`） |
