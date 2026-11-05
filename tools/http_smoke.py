@@ -201,6 +201,26 @@ def main() -> int:
                                              "Origin": "https://evil.example"})
         check("其他 origin 仍被拒", code == 403, f"HTTP {code}")
 
+    # 7. 边播边算（pace）：只比播放位置快 pace 秒；compute_ms 仍是模型真实速度
+    paced = dict(payload, max_frames=48, pace=1.0)
+    job_id, pcm, cost = client.stream(paced)
+    audio_s = len(pcm) / (48000 * 4)
+    code, _, body = client.request("GET", f"/api/v1/jobs/{job_id}")
+    info = json.loads(body or b"{}")
+    stats = {k: info.get(k) for k in ("frames", "compute_ms", "wall_ms", "rtf")}
+    check("pace：job 带 wall_ms", code == 200 and "wall_ms" in info, json.dumps(stats))
+    if audio_s > 2.0:
+        check("pace：墙钟拉长到接近音频时长", cost >= audio_s - 1.5,
+              f"墙钟 {cost:.2f} s / 音频 {audio_s:.2f} s")
+        check("pace：compute_ms 仍远小于墙钟", info.get("compute_ms", 1e9) < cost * 1000 * 0.6,
+              f"compute {info.get('compute_ms')} ms / wall {info.get('wall_ms')} ms")
+
+    # 8. pace 只改发送时机，不改一个字节
+    _, plain, _ = client.stream(dict(payload, greedy=True, max_frames=24))
+    _, paced_pcm, _ = client.stream(dict(payload, greedy=True, max_frames=24, pace=0.5))
+    check("pace 不影响 PCM", plain == paced_pcm and len(plain) > 0,
+          f"{len(plain)} 字节 / {len(paced_pcm)} 字节")
+
     # 5. WAV
     code, head, body = client.request("POST", "/api/v1/tts/wav",
                                       body=json.dumps(payload).encode(),

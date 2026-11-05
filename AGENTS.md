@@ -348,6 +348,31 @@ moss_tts.exe
 **不做 token**：同源页面、插件和 curl 都要能直连，token 在这个威胁模型下不增加实质防护，
 却会破坏"双击即用"和第三方调用。
 
+### 播放链路（v0.1.1 修过：不再丢音频）
+
+`web/app/player.js`（主线程，信用窗口）+ `web/app/pcm-worklet.js`（音频线程，4 s 环形缓冲）。
+
+推理比实时快 6~7 倍，v0.1.0 是"来一块推一块"：9.3 s 的音频 1.2 s 就全推过去，环形缓冲灌满，
+多出来的**静默丢弃**——用户听到的就是"播到一半跳过一截、还没播完就结束"。
+实测 9.28 s 的音频只播了 5.19 s，丢 4.09 s。
+
+现在 `send()` 保证在途样点 ≤ 2.5 s（缓冲满了就不读 socket，TCP 背压让服务端也慢下来），
+流结束用 `end` 把不足 128 帧的尾巴也播完；`dropped` 计数器应当恒为 0，页面会把它显示出来。
+
+回归：`node tools/playback_sim.mjs`（虚拟时钟重放**真实** HTTP 流 + 真实 worklet/player 代码，
+逐样点比对；输出里的 `legacy` 一行就是复现旧缺陷的对照）。已并入发布门禁。
+
+### 边播边算（`pace`，v0.1.1）
+
+`POST /api/v1/tts/stream` 加 `pace`（秒）：服务端只比播放位置快 N 秒，超了就在**块边界**睡。
+睡在消费线程上 → 流水线队列（4×chunk）填满后 LLM 生产者自己停，CPU 真的闲下来；
+块内不睡，所以听感连续。同 seed 加不加 `pace` 的 PCM 逐字节相同（只改"什么时候发"）。
+
+- 默认 0（不限速）；网页默认勾 1.5 s，标签是"边播边算（省 CPU）"。
+- `JobInfo` 新增 `wall_ms`（墙钟）；`compute_ms` 扣掉了限速睡眠和阻塞发送，所以 RTF 仍是模型速度。
+- **坑**：`on_audio` 回调给的 `frames` 是 48 kHz 样点帧（1 ms = 48 帧），不是 80 ms 的模型帧。
+  按 `frames * 80` 算会把 0.32 s 当成 20 分钟，第一次实现就这样挂死（请求 20 分钟不出声）。
+
 ### 数据目录与便携
 
 查找顺序 `--models` → exe 同级 `models/` → `%LOCALAPPDATA%\MossTTS\models`。
@@ -359,13 +384,17 @@ moss_tts.exe
 
 ```bat
 cd csrc && build.bat                                    :: 新增 json/runtime/server + ws2_32/shell32
-pwsh scripts/make_model_lock.ps1 -Weights weights       :: 生成 scripts/model_lock.json（信任根）
-pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0     :: dist/MossTTS-win-x64-{full,lite}.zip + sdk
+pwsh scripts/make_model_lock.ps1 -Weights weights       :: 生成 scripts/model_lock.json（信任根，保留 hf_commit）
+pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.1     :: dist/MossTTS-win-x64-{full,lite}.zip + sdk
 ```
 
 - 资产名**固定不带版本**，所以 `releases/latest/download/MossTTS-win-x64-full.zip` 永久有效。
 - `scripts/model_lock.json` 是**已提交的信任根**：打包前逐个校验大小 + sha256。
   CI 里绝不能"下载完再生成清单再自校验"，那是循环论证。
+- 权重同时发布在 HuggingFace（<https://huggingface.co/litterbit/moss-tts-nano-moss>），
+  布局必须等于发布包的 `models/`（`voices/` 是子目录），否则 `fetch_weights.ps1` 404。
+  `hf_commit` 字段固定 revision，`release.yml` 优先用仓库变量 `HF_MODEL_REVISION`，没有就用它。
+  整理/上传：`python tools/hf_upload.py --models weights --upload --verify`。详见 `doc/hf.md`。
 - 发版流水线：`ci.yml`（编译+内核/分词回归，不下载权重）、`release.yml`（tag → 拉固定 revision 权重 →
   校验 → 真模型 selftest + `tools/http_smoke.py` → 打包 → `gh release create`）、`pages.yml`（只发 `web/landing`）。
 - `build.bat` 已改成 vswhere 回退（本地走写死路径的快路径），GitHub Runner 上直接可跑。
@@ -401,6 +430,8 @@ pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0     :: dist/MossTTS-win-x64-
 | 安全 | 错误 Host / 跨源 Origin / 目录穿越 / 超大 JSON / 坏 JSON / 错误方法 全部 4xx |
 | 包内运行 | `runs/pkg` 解压后 `--version`/`--selftest`/`--serve` 全部正常，模型信息来自 `models/manifest.json` |
 | 连续合成 | 20 连跑 0 失败，RSS 222 → 252 MB（首音色前缀 KV + job 表），队列归零 |
+| 播放链路 | `tools/playback_sim.mjs`：9.28 s 音频，旧逻辑只播 5.19 s（丢 4.09 s），新逻辑 9.28 s、0 丢样、逐样点一致 |
+| 边播边算 | `pace=1.0` + 2.4 s 音频：墙钟 1.41 s，`compute_ms` 仍是 411 ms；限速下取消 34 ms |
 | stdio 通道 | `tools/stdio_smoke.py`：ping/info/voices/speak/cancel/clone/关 stdin 退出全过；`begin` 恒在首个 `audio` 之前 |
 | 冒烟脚本 | `python tools/http_smoke.py --base http://127.0.0.1:8759` / `python tools/stdio_smoke.py`（须用 conda 的 python；控制台先 `chcp 65001`） |
 

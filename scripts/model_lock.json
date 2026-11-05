@@ -4,6 +4,7 @@
     "model_revision":  "q8x4-f16-r1",
     "model_format":  "moss-v1",
     "min_engine_version":  "0.1.0",
+    "hf_commit":  "0c2789e832781345ade5034d7bbd26cabd5d04e9",
     "files":  [
                   {
                       "path":  "llm_q8x4.moss",

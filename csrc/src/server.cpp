@@ -380,6 +380,7 @@ std::string job_json(const JobInfo &info) {
     out << ",\"frames\":" << info.frames;
     out << ",\"audio_ms\":" << static_cast<long long>(info.audio_ms);
     out << ",\"compute_ms\":" << static_cast<long long>(info.compute_ms);
+    out << ",\"wall_ms\":" << static_cast<long long>(info.wall_ms);
     out << ",\"first_pcm_ms\":" << static_cast<long long>(info.first_pcm_ms);
     out << ",\"rtf\":" << (info.rtf > 0 ? info.rtf : 0.0);
     out << ",\"text_tokens\":" << info.text_tokens;
@@ -440,6 +441,7 @@ bool parse_job_request(const JsonValue &root, JobRequest *req, std::string *err)
     if (const JsonValue *v = root.get("top_p")) req->top_p = static_cast<float>(v->as_number(0));
     if (const JsonValue *v = root.get("repetition_penalty"))
         req->repetition_penalty = static_cast<float>(v->as_number(0));
+    if (const JsonValue *v = root.get("pace")) req->pace = v->as_number(0);
 
     req->max_frames = std::clamp(req->max_frames, 1, 2400);
     req->chunk_frames = std::clamp(req->chunk_frames, 1, 64);
@@ -448,6 +450,7 @@ bool parse_job_request(const JsonValue &root, JobRequest *req, std::string *err)
     if (req->top_k != 0) req->top_k = std::clamp(req->top_k, 1, 1024);
     if (!(req->top_p >= 0.0f && req->top_p <= 1.0f)) req->top_p = 0.0f;
     if (req->repetition_penalty < 0.0f || req->repetition_penalty > 2.0f) req->repetition_penalty = 0.0f;
+    if (!(req->pace >= 0.0 && req->pace <= 30.0)) req->pace = 0.0;
     return true;
 }
 

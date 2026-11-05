@@ -54,6 +54,9 @@ struct JobRequest {
     int top_k = 0;             // 0 = 默认 25
     float top_p = 0.0f;        // 0 = 默认 0.95
     float repetition_penalty = 0.0f;  // 0 = 默认 1.2
+    // 边播边算：允许领先播放位置多少秒（0 = 不限速，一次算完）。
+    // 睡眠发生在音频块之间（一块 = chunk_frames 帧），CPU 会真正闲下来。
+    double pace = 0.0;
 };
 
 enum class JobState { Queued, Running, Completed, Cancelled, Failed };
@@ -65,7 +68,8 @@ struct JobInfo {
     JobState state = JobState::Queued;
     int frames = 0;
     double audio_ms = 0.0;
-    double compute_ms = 0.0;
+    double compute_ms = 0.0;  // 纯计算时间（扣掉限速等待和阻塞的发送）
+    double wall_ms = 0.0;     // 从提交到结束的墙钟时间
     double first_pcm_ms = -1.0;
     double rtf = 0.0;
     int text_tokens = 0;

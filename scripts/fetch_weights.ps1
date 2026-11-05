@@ -40,8 +40,21 @@ foreach ($file in $lock.files) {
     }
     $url = "$Base/$($file.path)"
     Write-Host "[get ] $url"
-    & curl.exe -fL --retry 3 --retry-delay 2 -o $target $url
-    if ($LASTEXITCODE -ne 0) { throw "download failed: $url" }
+    # Invoke-WebRequest (not curl.exe): on Windows curl uses Schannel, which fails inside
+    # restricted/low-integrity shells (same reason mamba cannot reach the network there).
+    $ProgressPreference = "SilentlyContinue"
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $target -UseBasicParsing -TimeoutSec 600
+            break
+        } catch {
+            if ($attempt -ge 3) { throw "download failed: $url -- $($_.Exception.Message)" }
+            Write-Host "    retry ${attempt}: $($_.Exception.Message)"
+            Start-Sleep -Seconds 2
+        }
+    }
     $item = Get-Item $target
     if ($item.Length -ne $file.bytes) { throw "size mismatch for $relative" }
     $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLowerInvariant()

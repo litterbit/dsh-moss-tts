@@ -3,8 +3,8 @@
 #   pwsh scripts/release_check.ps1 [-SkipBuild] [-Tag v0.1.0]
 #
 # Steps: build -> kernel tests (avx2+scalar) -> tokenizer golden -> real-model selftest
-#        -> HTTP smoke (stream/cancel/security) -> stdio smoke -> node plugin tests
-#        -> pack full/lite/sdk -> verify zip contents.
+#        -> HTTP smoke (stream/cancel/security/pace) -> stdio smoke -> node plugin tests
+#        -> playback simulation (no dropped audio) -> pack full/lite/sdk -> verify zip contents.
 # Exits non-zero on the first failure.
 #
 # ASCII only on purpose (Windows PowerShell 5.1 reads .ps1 as ANSI without BOM);
@@ -91,6 +91,10 @@ if ($LASTEXITCODE -ne 0) { Fail "plugin backend tests failed" }
 node (Join-Path $root "dsh-plugin/test-plugin.mjs")
 if ($LASTEXITCODE -ne 0) { Fail "plugin entry tests failed" }
 
+Step "playback simulation (worklet + player.js must not drop audio)"
+node (Join-Path $root "tools/playback_sim.mjs") --exe (Join-Path $buildDir "moss_tts.exe") --models $weightsDir --port 8791
+if ($LASTEXITCODE -ne 0) { Fail "playback simulation failed" }
+
 Step "script encoding guard"
 # Windows PowerShell 5.1 reads a .ps1 with no BOM as ANSI: a stray Chinese byte can eat the
 # next quote and break the parser in ways that only show up on a clean machine. Keep every
@@ -113,7 +117,8 @@ $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $root "dist/MossTTS-win-x64
 try {
     # Compress-Archive stores entry names with backslashes on Windows PowerShell 5.1: normalize first
     $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
-    $required = @("moss_tts.exe", "moss_clone.exe", "web/index.html", "web/app.js", "web/pcm-worklet.js",
+    $required = @("moss_tts.exe", "moss_clone.exe", "web/index.html", "web/app.js", "web/player.js",
+                  "web/pcm-worklet.js",
                   "dsh-plugin/index.mjs", "dsh-plugin/backend.mjs", "dsh-plugin/player.mjs",
                   "models/llm_q8x4.moss", "models/decoder_f16.moss", "models/encoder_f16.moss",
                   "models/tokenizer.mossvocab", "models/manifest.json", "LICENSE", "NOTICE", "README.txt")

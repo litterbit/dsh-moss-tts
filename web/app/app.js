@@ -10,18 +10,16 @@
   //   2) GitHub Pages（或 file://）→ 跨源连 http://127.0.0.1:8759（端口占用时会顺延）
   const LOOPBACK = ['127.0.0.1', 'localhost', '[::1]'].includes(location.hostname);
   const LOCAL_PORTS = [8759, 8760, 8761, 8762, 8763];
+  const PACE_SECONDS = 1.5;   // 边播边算时允许领先播放位置多少秒
   let API = LOOPBACK ? location.origin : '';
 
   const state = {
     voices: { builtin: [], user: [] },
     ctx: null,
-    node: null,
+    player: null,     // StreamPlayer（player.js）：负责流量控制与进度
     controller: null,
     jobId: null,
     wav: [],          // Int16Array 分片，用于保存
-    playing: false,
-    played: 0,
-    underruns: 0,
     history: [],
   };
 
@@ -133,8 +131,8 @@
   }
 
   async function initAudio() {
-    if (state.node) return;
-    // 优先 48 kHz；个别设备/浏览器不接受指定采样率，就退回默认并在 postSamples 里重采样
+    if (state.player) return;
+    // 优先 48 kHz；个别设备/浏览器不接受指定采样率，就退回默认并在 player 里重采样
     let ctx;
     try {
       ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
@@ -144,45 +142,15 @@
     if (!ctx.audioWorklet) throw new Error('这个浏览器不支持 AudioWorklet');
     await ctx.audioWorklet.addModule('pcm-worklet.js');
     const node = new AudioWorkletNode(ctx, 'pcm-player', { outputChannelCount: [2] });
-    node.port.onmessage = (event) => {
-      if (event.data.type === 'stats') {
-        state.played = event.data.frames;
-        state.underruns = event.data.underruns;
-      }
-    };
     node.connect(ctx.destination);
     state.ctx = ctx;
-    state.node = node;
+    state.player = new StreamPlayer(ctx, node);
   }
 
   function resetPlayer() {
-    if (state.node) state.node.port.postMessage({ type: 'reset' });
+    if (state.player) state.player.reset();
     state.wav = [];
-    state.played = 0;
-    state.underruns = 0;
     $('level').style.width = '0%';
-  }
-
-  function postSamples(samples) {
-    if (!state.node) return;
-    let out = samples;
-    const rate = state.ctx.sampleRate;
-    if (rate !== 48000 && samples.length >= 4) {
-      // 设备只给了 44.1k：线性重采样，保证音高不变
-      const ratio = 48000 / rate;
-      const frames = Math.floor(samples.length / 2 / ratio);
-      out = new Float32Array(frames * 2);
-      for (let i = 0; i < frames; ++i) {
-        const src = i * ratio;
-        const i0 = Math.floor(src);
-        const i1 = Math.min(i0 + 1, Math.floor(samples.length / 2) - 1);
-        const frac = src - i0;
-        for (let c = 0; c < 2; ++c) {
-          out[i * 2 + c] = samples[i0 * 2 + c] * (1 - frac) + samples[i1 * 2 + c] * frac;
-        }
-      }
-    }
-    state.node.port.postMessage({ type: 'push', samples: out });
   }
 
   function appendWav(int16) {
@@ -244,6 +212,10 @@
       return;
     }
     if (state.ctx.state === 'suspended') await state.ctx.resume();
+    if (state.ctx.state !== 'running') {
+      setStatus('浏览器没放行音频输出，先点一下页面再试', 'err');
+      return;
+    }
     resetPlayer();
 
     $('go').disabled = true;
@@ -259,6 +231,9 @@
       max_frames: Number($('frames').value) || 375,
       temperature: Number($('temp').value),
       top_p: Number($('topp').value),
+      // 边播边算：只比播放位置快 1.5 s（服务端按墙钟节流，CPU 真的闲下来）；
+      // 不勾就一次算完，速度最快但会一直占满 CPU。
+      pace: $('pace').checked ? PACE_SECONDS : 0,
     };
     if (kind === 'user') { body.scope = 'user'; body.voice = id; }
     else body.voice = id;
@@ -303,12 +278,13 @@
             const a = v < 0 ? -v : v;
             if (a > peak) peak = a;
           }
-          postSamples(samples);
+          await state.player.send(samples);
           appendWav(new Int16Array(int16));
           $('level').style.width = Math.min(100, peak * 140) + '%';
         }
         pending = all.slice(usable);
       }
+      state.player.end();   // 让最后不足一块的尾巴也能播出来
     } catch (err) {
       if (err.name !== 'AbortError') failure = err.message || String(err);
     } finally {
@@ -327,9 +303,21 @@
     const info = await refreshJob();
     if (!info) { setStatus('完成（统计不可用）'); return; }
     if (info.state === 'failed') { setStatus('失败：' + (info.error || '推理失败'), 'err'); return; }
+    // 墙钟明显大于纯计算时间 = 服务端在按播放进度节流（边播边算）
+    const wall = Number(info.wall_ms) || Number(info.compute_ms);
+    const paced = wall > info.compute_ms + 400;
     if (info.state === 'cancelled') setStatus('已停止', 'ok');
-    else setStatus(`完成：${(info.audio_ms / 1000).toFixed(2)} s，计算 ${Math.round(info.compute_ms)} ms，RTF ${Number(info.rtf).toFixed(3)}`, 'ok');
-    renderChips(info, firstByte >= 0 ? [['首包到达', Math.round(firstByte) + ' ms']] : null);
+    else if (paced) {
+      setStatus(`完成：${(info.audio_ms / 1000).toFixed(2)} s，计算 ${Math.round(info.compute_ms)} ms（边播边算，墙钟 ${(wall / 1000).toFixed(2)} s）`, 'ok');
+    } else {
+      setStatus(`完成：${(info.audio_ms / 1000).toFixed(2)} s，计算 ${Math.round(info.compute_ms)} ms，RTF ${Number(info.rtf).toFixed(3)}`, 'ok');
+    }
+    const extra = [];
+    if (firstByte >= 0) extra.push(['首包到达', Math.round(firstByte) + ' ms']);
+    if (paced) extra.push(['墙钟', (wall / 1000).toFixed(2) + ' s']);
+    if (state.player && state.player.dropped > 0) extra.push(['丢样', state.player.dropped + ' 帧']);
+    if (state.player && state.player.underruns > 0) extra.push(['欠载', state.player.underruns + ' 次']);
+    renderChips(info, extra);
     if (info.state === 'completed') {
       pushHistory({ text, voice: $('voice').selectedOptions[0]?.textContent || '', info });
     }

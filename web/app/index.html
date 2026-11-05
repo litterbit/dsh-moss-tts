@@ -60,6 +60,9 @@
   a.btn { display: inline-block; text-decoration: none; border-radius: 9px; padding: 9px 16px;
           background: var(--accent); color: #fff; font-weight: 600; }
   a.btn:hover { filter: brightness(1.08); }
+  label.chk { display: inline-flex; align-items: center; gap: 7px; margin: 0; font-size: 13px;
+              color: var(--muted); cursor: pointer; user-select: none; }
+  label.chk input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 </style>
 </head>
 <body>
@@ -118,6 +121,9 @@
       <button class="primary" id="go">生成并播放</button>
       <button class="danger" id="stop" disabled>停止</button>
       <button id="save" disabled>保存 WAV</button>
+      <label class="chk" title="只比播放位置快 1.5 秒：CPU 几乎不发热，代价是长文本要边听边算；关掉则一次算完，CPU 全速。">
+        <input type="checkbox" id="pace" checked> 边播边算（省 CPU）
+      </label>
       <span class="status" id="status">就绪</span>
     </div>
     <div class="meter"><i id="level"></i></div>
@@ -148,6 +154,7 @@
 
   <div class="hint">引擎：MOSS-TTS-Nano-100M（int8 4×4 权重 / W8A16 解码 / fp16 解码器）。<a href="/api/v1/info" target="_blank" rel="noreferrer">查看运行时信息</a></div>
 </div>
+<script src="player.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

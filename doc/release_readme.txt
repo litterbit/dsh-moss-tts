@@ -7,6 +7,8 @@ MOSS-TTS CPU 推理引擎 {{TAG}}  （Windows x64）
 
   默认地址 http://127.0.0.1:8759/ ，只监听本机，不弹防火墙。
   首次运行 Windows 可能提示"已保护你的电脑"：更多信息 -> 仍要运行（未购买代码签名证书）。
+  试听台默认勾选"边播边算（省 CPU）"：只比播放位置快 1.5 秒生成，长文本边听边算，
+  CPU 平时只忙 15% 左右；取消勾选则一次算完（急用时更快）。
 
 <!--FULL-->  本包已自带权重（models/，约 160 MB），解压即用。
 <!--LITE-->  本包不含权重：把 llm_q8x4.moss / decoder_f16.moss / encoder_f16.moss / tokenizer.mossvocab

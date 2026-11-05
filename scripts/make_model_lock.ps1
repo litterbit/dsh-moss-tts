@@ -1,4 +1,4 @@
-﻿# Generate scripts/model_lock.json from the weights directory.
+# Generate scripts/model_lock.json from the weights directory.
 #
 # The lock file is the *trusted* source of truth for CI: the release workflow
 # downloads weights from HuggingFace, then verifies them against this file
@@ -13,6 +13,7 @@ param(
     [string]$ModelId = "moss-tts-nano-100m-q8x4",
     [string]$ModelRevision = "q8x4-f16-r1",
     [string]$EngineVersion = "0.1.0",
+    [string]$HfCommit = "",
     [string]$Out = "scripts/model_lock.json"
 )
 
@@ -51,14 +52,22 @@ if (Test-Path $voiceDir) {
     }
 }
 
+# hf_commit records which HuggingFace commit holds these bytes; release.yml pins the
+# revision to it. Keep the old value when regenerating (use -HfCommit to change it),
+# otherwise every hash refresh silently drops the pin.
+if (-not $HfCommit -and (Test-Path $outPath)) {
+    try { $HfCommit = (Get-Content $outPath -Raw | ConvertFrom-Json).hf_commit } catch { $HfCommit = "" }
+}
+
 $lock = [ordered]@{
     schema_version     = 1
     model_id           = $ModelId
     model_revision     = $ModelRevision
     model_format       = "moss-v1"
     min_engine_version = $EngineVersion
-    files              = $files
 }
+if ($HfCommit) { $lock["hf_commit"] = $HfCommit }
+$lock["files"] = $files
 
 $json = $lock | ConvertTo-Json -Depth 6
 [System.IO.File]::WriteAllText($outPath, $json + "`n", (New-Object System.Text.UTF8Encoding($false)))

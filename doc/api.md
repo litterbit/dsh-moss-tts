@@ -77,7 +77,8 @@
  "temperature":0.8,       // 0 = 默认
  "top_k":25,
  "top_p":0.95,
- "repetition_penalty":1.2}
+ "repetition_penalty":1.2,
+ "pace":0}                // 边播边算：允许领先播放位置多少秒（0~30，0 = 不限速，默认 0）
 ```
 
 响应：
@@ -95,6 +96,14 @@ HTTP 的 chunk 边界不等于音频帧边界：客户端必须按 4 字节对�
 
 统计不混在音频里：流结束后用 `X-Moss-Request-Id` 查 `GET /api/v1/jobs/{id}`。
 
+`pace > 0` 时服务端按墙钟节流：已经发出的音频时长减去首块发出后流逝的时间超过 `pace` 秒就
+在块边界睡一会儿（睡眠期间流水线队列填满，LLM 生产者自己也停，CPU 真正闲下来）。
+所以整段流的总时长会接近音频时长，但 `compute_ms` 只算模型干活的时间。
+块大小不受影响；`pace` 只影响"什么时候发"，不影响一个字节的内容
+（同 seed 同参数时，加不加 `pace` 的 PCM 逐字节相同）。
+
+这是给"边听边算"用的：网页默认勾选 1.5 s。整段下载/离线合成应当用 `pace:0`。
+
 ### `POST /api/v1/tts/wav`
 
 同样的请求体，返回完整 WAV（带 `Content-Disposition`）。可选 `"trim":true` 裁掉尾部低于
@@ -104,12 +113,13 @@ HTTP 的 chunk 边界不等于音频帧边界：客户端必须按 4 字节对�
 
 ```json
 {"ok":true,"id":"5f43c1a200000003","state":"completed","frames":64,
- "audio_ms":5120,"compute_ms":764,"first_pcm_ms":98,"rtf":0.149,
+ "audio_ms":5120,"compute_ms":764,"wall_ms":770,"first_pcm_ms":98,"rtf":0.149,
  "text_tokens":12,"cache_hit":true,"error":""}
 ```
 
 `state`：`queued | running | completed | cancelled | failed`。
-`rtf = compute_ms / audio_ms`。任务记录保留 10 分钟 / 最近 32 条。
+`rtf = compute_ms / audio_ms`。`wall_ms` 是从任务开始到结束的墙钟时间：限速（`pace`）或接收端
+读得慢时它会明显大于 `compute_ms`。任务记录保留 10 分钟 / 最近 32 条。
 
 ### `POST /api/v1/jobs/{id}/cancel`
 

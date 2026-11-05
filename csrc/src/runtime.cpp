@@ -359,8 +359,27 @@ void Runtime::run_job(const std::shared_ptr<Job> &job) {
 
     std::vector<int16_t> pcm;
     int sink_error = 0;
+
+    // 边播边算（req.pace > 0）：只比「第一块已经发出之后流逝的时间」快 pace 秒。
+    // 睡在消费线程上 → 流水线队列（4×chunk）填满后生产者自己也停，CPU 真的会闲下来。
+    // 睡眠只在块边界发生，块内不会断，所以听感是连续的。
+    const double pace_ms = req.pace > 0.0 ? req.pace * 1000.0 : 0.0;
+    Clock::time_point first_audio_at;
+    double audio_sent_ms = 0.0;
+    double sink_ms = 0.0;   // 限速等待 + 发送阻塞的时间，统计时要扣掉
+
     options.on_audio = [&](const float *data, int frames) {
         if (frames <= 0) return;
+        const auto sink_started = Clock::now();
+        if (audio_sent_ms <= 0.0) first_audio_at = sink_started;
+        audio_sent_ms += frames / 48.0;  // 回调给的是 48 kHz 的样点帧：1 ms = 48 帧
+        if (pace_ms > 0.0) {
+            while (!job->cancel.load() && audio_sent_ms - ms_since(first_audio_at) > pace_ms) {
+                const double ahead = audio_sent_ms - ms_since(first_audio_at) - pace_ms;
+                std::this_thread::sleep_for(
+                    std::chrono::milliseconds(static_cast<int>(std::min(20.0, std::max(1.0, ahead)))));
+            }
+        }
         pcm.resize(static_cast<size_t>(frames) * 2);
         for (int i = 0; i < frames * 2; ++i) pcm[static_cast<size_t>(i)] = to_pcm16(data[i]);
         if (job->sink && !job->sink(pcm.data(), frames)) {
@@ -368,6 +387,7 @@ void Runtime::run_job(const std::shared_ptr<Job> &job) {
             sink_error = 1;
             job->cancel.store(true);
         }
+        sink_ms += ms_since(sink_started);
     };
 
     SynthStats stats;
@@ -389,10 +409,14 @@ void Runtime::run_job(const std::shared_ptr<Job> &job) {
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        const double wall = ms_since(started);
         job->info.frames = stats.frames;
         job->info.text_tokens = stats.text_tokens;
         job->info.audio_ms = stats.audio_seconds * 1000.0;
-        job->info.compute_ms = ms_since(started);
+        job->info.wall_ms = wall;
+        // compute_ms 只算引擎真正干活的时间：限速睡眠和阻塞的发送都不算进去，
+        // 否则限速模式下 RTF 会假到 1.0 左右，看不出模型本身有多快。
+        job->info.compute_ms = std::max(0.0, wall - sink_ms);
         job->info.first_pcm_ms = stats.first_audio_ms;
         job->info.cache_hit = stats.prefix_cache_hit;
         job->info.rtf = job->info.audio_ms > 0.0 ? job->info.compute_ms / job->info.audio_ms : 0.0;

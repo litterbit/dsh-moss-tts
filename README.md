@@ -42,6 +42,9 @@ moss_tts.exe --serve --port 9000 --no-open
 moss_tts.exe --stdio             :: 给插件用：stdin/stdout 上的 JSON 行协议，不占端口
 ```
 
+试听台默认勾着「边播边算（省 CPU）」：推理只比播放位置快 1.5 秒，长文本听着听着就生成完了，
+CPU 平时只忙 15% 左右；取消勾选则一次算完（短句、或者急着要文件时更快）。
+
 装好之后，门户页上的「在网页里直接试听」也能用：页面会自己探测 `127.0.0.1`（8759→8763）
 并连上本机引擎；连不上就提示去下载。默认只放行本项目这一个 origin，
 `--allow-origin none` 可彻底关掉跨源。
@@ -78,12 +81,14 @@ build.bat                     :: 需要 VS 2022（Build Tools 即可）+ C++ 工
 ```
 
 产物在 `csrc/build/`。权重不进仓库，由 `tools/export_*.py` 从 PyTorch checkpoint 导出，
-或用 `scripts/fetch_weights.ps1` 从发布渠道拉取并校验。
+或用 `scripts/fetch_weights.ps1` 从 [HuggingFace](https://huggingface.co/litterbit/moss-tts-nano-moss)
+按 `scripts/model_lock.json` 里固定的 revision 拉取并逐个校验（布局与更新流程见 [`doc/hf.md`](doc/hf.md)）。
 
 ```bat
-pwsh scripts/fetch_weights.ps1 -Base https://huggingface.co/<owner>/moss-tts-nano-moss/resolve/<commit>
-pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.0    :: -> dist/*.zip + sha256sums.txt
-python tools/http_smoke.py                            :: 服务端冒烟（流式/取消/安全）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_weights.ps1 -Weights weights
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack_release.ps1 -Mode all -Tag v0.1.1
+python tools/http_smoke.py                          :: 服务端冒烟（流式/取消/安全/限速）
+node tools/playback_sim.mjs                         :: 播放链路重放（不能丢样）
 ```
 
 ## 目录

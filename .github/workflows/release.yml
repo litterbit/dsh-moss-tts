@@ -1,7 +1,8 @@
 name: release
 
 # tag v* -> 编译、验证权重、真机冒烟、打包 full/lite/sdk、发布 Release。
-# 权重不重新生成：从 HuggingFace 指定 commit 下载，逐文件对照 scripts/model_lock.json 校验。
+# 权重不重新生成：从 HuggingFace 下载，逐文件对照 scripts/model_lock.json 校验。
+# revision 默认用 lock 里的 hf_commit（固定），仓库变量 HF_MODEL_REVISION 可临时覆盖。
 on:
   push:
     tags: ["v*"]
@@ -12,7 +13,7 @@ permissions:
 
 env:
   HF_MODEL_REPO: ${{ vars.HF_MODEL_REPO || 'litterbit/moss-tts-nano-moss' }}
-  HF_MODEL_REVISION: ${{ vars.HF_MODEL_REVISION || 'main' }}
+  HF_MODEL_REVISION: ${{ vars.HF_MODEL_REVISION }}
   MOSS_VERSION: ${{ github.ref_name }}
 
 jobs:
@@ -49,11 +50,24 @@ jobs:
           path: weights
           key: weights-${{ hashFiles('scripts/model_lock.json') }}
 
+      - name: Resolve weights revision
+        shell: pwsh
+        run: |
+          # 固定 revision：优先仓库变量，其次 scripts/model_lock.json 的 hf_commit。
+          # 不跟着 main 漂，同一个 tag 重跑能拿到同一批字节。
+          $rev = $env:HF_MODEL_REVISION
+          if (-not $rev) {
+            $rev = (Get-Content scripts/model_lock.json -Raw | ConvertFrom-Json).hf_commit
+          }
+          if (-not $rev) { throw "no HF_MODEL_REVISION and no hf_commit in scripts/model_lock.json" }
+          Write-Host "[ok] weights revision $rev"
+          "MOSS_HF_REV=$rev" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Fetch weights (pinned revision)
         shell: pwsh
         run: |
-          $base = "https://huggingface.co/$env:HF_MODEL_REPO/resolve/$env:HF_MODEL_REVISION"
-          pwsh -NoProfile -File scripts/fetch_weights.ps1 -Base $base
+          $base = "https://huggingface.co/$env:HF_MODEL_REPO/resolve/$env:MOSS_HF_REV"
+          powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_weights.ps1 -Base $base
 
       - name: Real-model selftest
         shell: cmd
@@ -94,6 +108,12 @@ jobs:
           node dsh-plugin/test-plugin.mjs
           if ($LASTEXITCODE -ne 0) { throw "plugin entry tests failed" }
 
+      - name: Playback simulation (worklet + player.js must not drop audio)
+        shell: pwsh
+        run: |
+          node tools/playback_sim.mjs --exe csrc\build\moss_tts.exe --models weights --port 8791
+          if ($LASTEXITCODE -ne 0) { throw "playback simulation failed" }
+
       - name: Pack full / lite / sdk
         shell: pwsh
         run: pwsh -NoProfile -File scripts/pack_release.ps1 -Mode all -Tag $env:MOSS_VERSION
@@ -106,7 +126,8 @@ jobs:
           try {
             # Compress-Archive 在 Windows PowerShell 5.1 里用反斜杠存条目名，先归一化再比对
             $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
-            $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/pcm-worklet.js",
+            $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/player.js",
+                          "web/pcm-worklet.js",
                           "dsh-plugin/index.mjs","dsh-plugin/backend.mjs","dsh-plugin/player.mjs",
                           "models/llm_q8x4.moss","models/decoder_f16.moss","models/encoder_f16.moss",
                           "models/tokenizer.mossvocab","models/manifest.json","LICENSE","NOTICE","README.txt")
