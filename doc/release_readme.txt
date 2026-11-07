@@ -39,15 +39,12 @@ MOSS-TTS CPU 推理引擎 {{TAG}}  （Windows x64）
   详见仓库 doc/api.md。
 
 五、DSH 插件（DeepSeek Harness）
-  本目录的 dsh-plugin\ 就是插件本体。在 profile 的 cordis.patch.yml 里加：
-    - insert:
-        - id: moss-tts
-          name: <本目录>\dsh-plugin\index.mjs
-          config:
-            exe: <本目录>\moss_tts.exe
-            models: <本目录>\models
-            voice: Junhao
-  不需要先起服务：插件自己 spawn 常驻子进程（--stdio）。
+  插件在单独的仓库，一条命令装：
+    dsh plugin --profile desktop add github:litterbit/dsh-plugin-moss-tts#main
+  装完重启 DSH，在 设置 → Moss 语音 里点「下载引擎」即可（会自动定位到本目录这种
+  exe + models 的便携布局，不重复下载）。插件自己 spawn 常驻子进程（--stdio），
+  不需要先起服务。
+  仓库：https://github.com/litterbit/dsh-plugin-moss-tts
 
 六、许可
   Apache-2.0，见 LICENSE；模型派生与改动说明见 NOTICE。

@@ -3,8 +3,20 @@
 MOSS-TTS-Nano-100M 的原生 **C++ CPU 推理引擎**（Windows x64，零第三方运行时依赖）。
 文本进、音频出，流式出声，支持音色克隆；全部在本机计算，不联网、不上传文本。
 
-> 最终形态是 **DeepSeek Harness 的 TTS 插件**；这个仓库同时提供可独立使用的命令行、
-> 本地 HTTP 服务和一个浏览器试听台——三者跑的是同一个二进制、同一份权重。
+> 最终形态是 **DeepSeek Harness 的 TTS 插件**（在
+> [litterbit/dsh-plugin-moss-tts](https://github.com/litterbit/dsh-plugin-moss-tts)）；
+> 这个仓库是它背后的引擎，同时提供可独立使用的命令行、本地 HTTP 服务和一个浏览器试听台
+> ——三者跑的是同一个二进制、同一份权重。
+
+## 装进 DeepSeek Harness
+
+```bash
+dsh plugin --profile desktop add github:litterbit/dsh-plugin-moss-tts#main
+```
+
+重启 DSH，在 **设置 → Moss 语音** 里点「下载引擎」。已经用本页的 zip 装过？
+
+插件会直接复用（同一个 `%LOCALAPPDATA%\MossTTS`），不重复下载。
 
 ## 下载
 
@@ -99,9 +111,11 @@ node tools/playback_sim.mjs                         :: 播放链路重放（不�
 | `web/app/` | 本地试听台（随包发布，由服务托管） |
 | `web/landing/` | GitHub Pages 门户 |
 | `tools/` | 权重导出、ONNX 对拍、冒烟测试、量化扫描（Python，离线用） |
-| `dsh-plugin/` | DeepSeek Harness 插件（Node，spawn `--stdio`，与网页/CLI 共用同一个 exe） |
 | `scripts/` | 权重下载、模型 lock、打包、发布 |
 | `doc/` | 设计文档与实测记录（`api.md`、`产品化与分发方案.md`、`v0.1现状与后续.md`、`1103定档-推理栈现状.md`） |
+
+DSH 插件是独立仓库 [litterbit/dsh-plugin-moss-tts](https://github.com/litterbit/dsh-plugin-moss-tts)；
+本仓库对它只有一个承诺：`moss_tts.exe --stdio` 的 JSON 行协议（字段只增不改，见 `doc/api.md`）。
 
 ## 许可
 

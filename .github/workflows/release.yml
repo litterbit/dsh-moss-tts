@@ -100,14 +100,6 @@ jobs:
           python tools/stdio_smoke.py --exe csrc\build\moss_tts.exe --models weights
           if ($LASTEXITCODE -ne 0) { throw "stdio smoke tests failed" }
 
-      - name: Node plugin backend smoke (spawn + stdio)
-        shell: pwsh
-        run: |
-          node dsh-plugin/test-backend.mjs --exe csrc\build\moss_tts.exe --models weights
-          if ($LASTEXITCODE -ne 0) { throw "plugin backend tests failed" }
-          node dsh-plugin/test-plugin.mjs
-          if ($LASTEXITCODE -ne 0) { throw "plugin entry tests failed" }
-
       - name: Playback simulation (worklet + player.js must not drop audio)
         shell: pwsh
         run: |
@@ -128,7 +120,6 @@ jobs:
             $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
             $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/player.js",
                           "web/pcm-worklet.js",
-                          "dsh-plugin/index.mjs","dsh-plugin/backend.mjs","dsh-plugin/player.mjs",
                           "models/llm_q8x4.moss","models/decoder_f16.moss","models/encoder_f16.moss",
                           "models/tokenizer.mossvocab","models/manifest.json","LICENSE","NOTICE","README.txt")
             $missing = $required | Where-Object { $names -notcontains $_ }

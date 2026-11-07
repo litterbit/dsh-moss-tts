@@ -70,8 +70,6 @@ function Copy-Common([string]$dir) {
     Copy-Item (Join-Path $root "LICENSE") $dir
     Copy-Item (Join-Path $root "NOTICE") $dir
     Copy-Item (Join-Path $root "web/app") (Join-Path $dir "web") -Recurse
-    # Ship the DSH plugin too: after install, point the profile at <install dir>\dsh-plugin\index.mjs
-    Copy-Item (Join-Path $root "dsh-plugin") (Join-Path $dir "dsh-plugin") -Recurse
 }
 
 function Write-Readme([string]$dir, [string]$kind) {

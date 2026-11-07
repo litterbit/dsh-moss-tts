@@ -435,25 +435,28 @@ pwsh scripts/pack_release.ps1 -Mode all -Tag v0.1.1     :: dist/MossTTS-win-x64-
 | stdio 通道 | `tools/stdio_smoke.py`：ping/info/voices/speak/cancel/clone/关 stdin 退出全过；`begin` 恒在首个 `audio` 之前 |
 | 冒烟脚本 | `python tools/http_smoke.py --base http://127.0.0.1:8759` / `python tools/stdio_smoke.py`（须用 conda 的 python；控制台先 `chcp 65001`） |
 
-## 插件层（dsh-plugin/，2026-11-04）
+## 插件层（独立仓库，2026-11-08）
 
-DSH 宿主插件接入的是 `--stdio`，不是 HTTP：不需要端口、不需要先起服务，插件自己 spawn 常驻子进程。
+插件已迁出本仓库：[`litterbit/dsh-plugin-moss-tts`](https://github.com/litterbit/dsh-plugin-moss-tts)
+（原 `dsh-plugin/` 的 4 个工具被重写，不再从宿主 asar 里 import `defineTool`——工具定义就是标准
+JSON Schema 的普通对象，宿主 `tools.register` 直接接受）。
+
+本仓库对插件只有一个承诺：**`moss_tts.exe --stdio` 的 JSON 行协议**（`doc/api.md`）。
+字段只增不改；删字段必须主版本号递增；`info.version` 是握手版本。
+
+插件那边的分工（需要排查时看它的 README）：
 
 ```
-index.mjs    DSH 入口：export { name, inject:['tools'], apply(ctx, config) }
-             ctx.tools.register(defineTool(...)) 注册 4 个工具；ctx.effect 里 dispose 子进程
-backend.mjs  TtsBackend：spawn --stdio、按行解析、把 audio 行 base64 解成 PCM 回调、取消、克隆
-player.mjs   Windows 播放：写临时 WAV → System.Media.SoundPlayer.PlaySync()（阻塞到播完）
+lib/index.mjs       apply(ctx, config)：路由 + 工具 + effect 收进程
+lib/host/install.mjs 定位/下载(续传)/sha256(发布页 sums)/tar 解压 → %LOCALAPPDATA%\MossTTS
+lib/host/engine.mjs  spawn --stdio、行协议、单 worker 串行、stdout 背压
+lib/host/routes.mjs  /moss-tts/{status,install,voices,stream,wav,prefs}
+lib/client.js       浏览器半边：设置页、输入框开关、每条回复朗读键、AudioWorklet 播放
 ```
 
-- `defineTool` 从宿主 asar 里 import：`<resources>/app.asar/dsh/node_modules/@deepseek-ai/dsh-tools/lib/index.js`，
-  先用 `process.resourcesPath` 推，再退回写死路径；两边都失败就退化成恒等函数，保证插件至少能加载。
-- 两个回归脚本都在仓库里、都不需要 DSH：
-  `node dsh-plugin/test-backend.mjs`（协议层 10 项）、`node dsh-plugin/test-plugin.mjs`（假 ctx 里注册并真合成）。
-- 一条命令复现整条发布门禁：`pwsh scripts/release_check.ps1`（编译 → 内核/分词回归 → selftest →
-  HTTP 冒烟 → stdio 冒烟 → node 插件测试 → 编码守卫 → 打包 → 校验 zip），顺序与 `release.yml` 一致。
+- 它**不复制权重**：装到 `%LOCALAPPDATA%\MossTTS`，与 CLI / 试听台共用同一份 exe + models。
+- 发布门禁不再包含插件测试（插件有自己的 CI）；`release_check.ps1` 现在 11 步。
 - 包内 `README.txt` 的正文在 `doc/release_readme.txt`（UTF-8），`pack_release.ps1` 本身保持**纯 ASCII**：
   这样即使编辑器把 BOM 弄丢，PS 5.1 也不会按 ANSI 解码把脚本解析坏。`release_check.ps1` 有守卫直接拦。
-- 播放刻意选"整段合成完再播"：引 ffplay/sox 会加依赖，而 5 s 语音只要 0.76 s 合成；流式播放留到 v2。
-- 还没做"助手回复自动朗读"（需要宿主消息事件），现在只有显式工具调用。
+- 全量 zip 不再包含 `dsh-plugin/`（插件从 git 安装，zip 里带一份只会变成过期副本）。
 
