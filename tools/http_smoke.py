@@ -202,8 +202,14 @@ def main() -> int:
         check("其他 origin 仍被拒", code == 403, f"HTTP {code}")
 
     # 7. 边播边算（pace）：只比播放位置快 pace 秒；compute_ms 仍是模型真实速度
-    paced = dict(payload, max_frames=48, pace=1.0)
-    job_id, pcm, cost = client.stream(paced)
+    # 不比较 compute/wall 的比值 —— 机器越慢 compute 占比越高（GitHub runner 上
+    # 就撞过一次 0.63 的假失败）。改为和"同参数、不限速"的 job 对比：
+    # 墙钟必须变长，compute_ms 必须基本不变（睡眠没被算进模型时间）。
+    ref_payload = dict(payload, max_frames=48)
+    ref_id, _, ref_cost = client.stream(ref_payload)
+    _, _, ref_body = client.request("GET", f"/api/v1/jobs/{ref_id}")
+    ref_info = json.loads(ref_body or b"{}")
+    job_id, pcm, cost = client.stream(dict(ref_payload, pace=1.0))
     audio_s = len(pcm) / (48000 * 4)
     code, _, body = client.request("GET", f"/api/v1/jobs/{job_id}")
     info = json.loads(body or b"{}")
@@ -212,8 +218,11 @@ def main() -> int:
     if audio_s > 2.0:
         check("pace：墙钟拉长到接近音频时长", cost >= audio_s - 1.5,
               f"墙钟 {cost:.2f} s / 音频 {audio_s:.2f} s")
-        check("pace：compute_ms 仍远小于墙钟", info.get("compute_ms", 1e9) < cost * 1000 * 0.6,
-              f"compute {info.get('compute_ms')} ms / wall {info.get('wall_ms')} ms")
+        check("pace：墙钟比不限速长", cost >= ref_cost + 0.25,
+              f"限速 {cost:.2f} s / 不限速 {ref_cost:.2f} s")
+        c1, c0 = info.get("compute_ms") or 0, ref_info.get("compute_ms") or 0
+        check("pace：compute_ms 仍是不限速的模型时间", c0 > 0 and abs(c1 - c0) <= c0 * 0.4 + 200,
+              f"compute {c1} ms / 不限速 {c0} ms / 墙钟 {info.get('wall_ms')} ms")
 
     # 8. pace 只改发送时机，不改一个字节
     _, plain, _ = client.stream(dict(payload, greedy=True, max_frames=24))
