@@ -12,6 +12,7 @@
 #include "moss/cpu_features.h"
 #include "moss/json.h"
 #include "moss/version.h"
+#include "moss/voices.h"
 
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
@@ -22,7 +23,6 @@ namespace {
 constexpr int kKeepJobs = 32;
 constexpr int kJobTtlSeconds = 600;
 constexpr size_t kMaxTextChars = 4000;
-const char *kDefaultVoice = "Junhao";
 
 double ms_since(Clock::time_point t0) {
     return std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
@@ -41,22 +41,16 @@ std::string read_text_file(const std::string &path) {
     return ss.str();
 }
 
-// 按物理核给两套线程数：解码器是热点，可以比 LLM 多给
+// 自动线程数：默认 2+3（LLM 2 / 解码器 3）。解码器是热点，所以默认给它多一个；
+// 单核机器降到 1+1。
+// 为什么要分两套：LLM 的 GEMV/GEMM 和音频解码器是两个独立线程池，流水线并行，
+// 峰值时同时忙 threads+decode 个核。想要更快可以调成 4+4 / 4+6，
+// 网页的「性能」面板或 --threads/--decode-threads 都能改（重启生效）。
 void auto_threads(int *llm, int *decode) {
-    int cores = cpu_features().physical_cores;
-    if (cores <= 0) cores = 1;
-    int l = 4, d = 6;
-    if (cores <= 2) {
-        l = 2;
-        d = 2;
-    } else if (cores <= 4) {
-        l = 3;
-        d = 4;
-    } else if (cores <= 6) {
-        l = 4;
-        d = 4;
-    }
+    const int cores = std::max(1, cpu_features().physical_cores);
     const int logical = std::max(1, cpu_features().logical_cores);
+    int l = cores <= 1 ? 1 : 2;
+    int d = cores <= 1 ? 1 : 3;
     l = std::min(l, logical);
     d = std::min(d, logical);
     *llm = l;
@@ -212,6 +206,10 @@ std::vector<VoiceInfo> Runtime::voices() const {
             if (entry.path().extension() != ".mossclone") continue;
             VoiceInfo info;
             info.id = entry.path().stem().string();
+            info.label = info.id;
+            if (!user) {
+                if (const char *label = builtin_voice_label(info.id)) info.label = label;
+            }
             info.user = user;
             std::ifstream in(entry.path(), std::ios::binary);
             char head[16] = {};
@@ -232,6 +230,8 @@ std::vector<VoiceInfo> Runtime::voices() const {
     scan(options_.user_voices_dir, true);
     return out;
 }
+
+std::string Runtime::default_voice() const { return pick_default_voice(options_.voices_dir); }
 
 bool Runtime::clone_voice(const std::string &name, const std::vector<uint8_t> &wav_bytes, std::string *err) {
     if (name.empty() || name.size() > 32) {
@@ -291,7 +291,7 @@ bool Runtime::submit(const JobRequest &request, PcmSink sink, std::string *job_i
     auto job = std::make_shared<Job>();
     job->id = request.id.empty() ? make_job_id() : request.id;
     job->request = request;
-    if (job->request.voice.empty()) job->request.voice = kDefaultVoice;
+    if (job->request.voice.empty()) job->request.voice = default_voice();
     job->sink = std::move(sink);
     job->info.id = job->id;
     job->info.state = JobState::Queued;

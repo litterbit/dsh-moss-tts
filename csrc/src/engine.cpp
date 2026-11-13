@@ -28,6 +28,11 @@ inline double ms_since(Clock::time_point t0) {
 constexpr double kPauseShortSeconds = 0.40;
 constexpr double kPauseLongSeconds = 0.24;
 
+// 参考音频上限：再长只会让 prompt 变长、编码变慢，音色本身没有额外信息。
+// 20.05 s 的容差留给「剪到 20.00 s 再编码」时采样率换算的零头。
+constexpr double kMaxCloneSeconds = 20.0;
+constexpr double kMaxCloneTolerance = 0.05;
+
 inline bool ends_with(const std::string &s, const char *suffix) {
     const size_t n = std::strlen(suffix);
     return s.size() >= n && std::memcmp(s.data() + s.size() - n, suffix, n) == 0;
@@ -245,6 +250,16 @@ bool TtsEngine::clone_audio(const std::string &wav_path, const std::string &out_
     int channels = 0;
     if (!wav_read(wav_path, &pcm, &sample_rate, &channels, err)) return false;
     const int in_frames = static_cast<int>(pcm.size() / static_cast<size_t>(channels));
+    const double seconds = static_cast<double>(in_frames) / static_cast<double>(sample_rate);
+    if (seconds > kMaxCloneSeconds + kMaxCloneTolerance) {
+        if (err) {
+            char buf[192];
+            std::snprintf(buf, sizeof(buf), "参考音频最长 %.0f 秒（这段 %.1f 秒），请先裁剪", kMaxCloneSeconds,
+                          seconds);
+            *err = buf;
+        }
+        return false;
+    }
     if (channels == 1) {
         std::vector<float> stereo(static_cast<size_t>(in_frames) * 2);
         for (int i = 0; i < in_frames; ++i) {

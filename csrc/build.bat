@@ -22,7 +22,7 @@ if not exist "%OUT%" mkdir "%OUT%"
 set "CFLAGS=/nologo /std:c++20 /utf-8 /O2 /Oi /EHsc /fp:fast /MT /D_CRT_SECURE_NO_WARNINGS /D_WIN32_WINNT=0x0A00 /DNOMINMAX /DWIN32_LEAN_AND_MEAN /Iinclude /c /Fo%OUT%\"
 
 rem ---- baseline objects (no AVX2 required) ----
-cl %CFLAGS% /arch:SSE2 src\fp16.cpp src\cpu_features.cpp src\quant.cpp src\gemv.cpp src\weights.cpp src\sampler.cpp src\parallel.cpp src\audio_layer.cpp src\attn_scalar.cpp src\decoder.cpp src\encoder.cpp src\wav.cpp src\resample.cpp src\profile.cpp src\prompt.cpp src\spm.cpp src\engine.cpp src\capi.cpp src\llm.cpp src\main.cpp src\decoder_main.cpp src\tts_main.cpp src\clone_main.cpp src\json.cpp src\runtime.cpp src\server.cpp src\stdio_server.cpp
+cl %CFLAGS% /arch:SSE2 src\fp16.cpp src\cpu_features.cpp src\quant.cpp src\gemv.cpp src\weights.cpp src\sampler.cpp src\parallel.cpp src\audio_layer.cpp src\attn_scalar.cpp src\decoder.cpp src\encoder.cpp src\wav.cpp src\resample.cpp src\profile.cpp src\prompt.cpp src\spm.cpp src\engine.cpp src\capi.cpp src\llm.cpp src\main.cpp src\decoder_main.cpp src\tts_main.cpp src\clone_main.cpp src\json.cpp src\runtime.cpp src\server.cpp src\stdio_server.cpp src\voices.cpp src\settings.cpp
 if errorlevel 1 (echo [x] base compile failed & exit /b 1)
 
 rem ---- AVX2 kernel ----
@@ -42,7 +42,7 @@ cl %LD% %COMMON% %OUT%\llm.obj %OUT%\main.obj /Fe:%OUT%\moss_llm.exe
 if errorlevel 1 (echo [x] link moss_llm failed & exit /b 1)
 cl %LD% %COMMON% %AUDIO% %OUT%\decoder.obj %OUT%\decoder_main.obj /Fe:%OUT%\moss_decoder.exe
 if errorlevel 1 (echo [x] link moss_decoder failed & exit /b 1)
-cl %LD% %COMMON% %AUDIO% %OUT%\llm.obj %OUT%\decoder.obj %OUT%\encoder.obj %OUT%\engine.obj %OUT%\spm.obj %OUT%\prompt.obj %OUT%\profile.obj %OUT%\wav.obj %OUT%\resample.obj %OUT%\json.obj %OUT%\runtime.obj %OUT%\server.obj %OUT%\stdio_server.obj %OUT%\tts_main.obj /Fe:%OUT%\moss_tts.exe ws2_32.lib shell32.lib
+cl %LD% %COMMON% %AUDIO% %OUT%\llm.obj %OUT%\decoder.obj %OUT%\encoder.obj %OUT%\engine.obj %OUT%\spm.obj %OUT%\prompt.obj %OUT%\profile.obj %OUT%\wav.obj %OUT%\resample.obj %OUT%\json.obj %OUT%\runtime.obj %OUT%\server.obj %OUT%\stdio_server.obj %OUT%\voices.obj %OUT%\settings.obj %OUT%\tts_main.obj /Fe:%OUT%\moss_tts.exe ws2_32.lib shell32.lib
 if errorlevel 1 (echo [x] link moss_tts failed & exit /b 1)
 cl %LD% %COMMON% %AUDIO% %OUT%\encoder.obj %OUT%\wav.obj %OUT%\resample.obj %OUT%\profile.obj %OUT%\clone_main.obj /Fe:%OUT%\moss_clone.exe
 if errorlevel 1 (echo [x] link moss_clone failed & exit /b 1)

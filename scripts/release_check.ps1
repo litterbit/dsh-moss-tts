@@ -4,7 +4,8 @@
 #
 # Steps: build -> kernel tests (avx2+scalar) -> tokenizer golden -> real-model selftest
 #        -> HTTP smoke (stream/cancel/security/pace) -> stdio smoke
-#        -> playback simulation (no dropped audio) -> pack full/lite/sdk -> verify zip contents.
+#        -> playback simulation (no dropped audio) -> clone chain (trim -> PCM WAV -> engine)
+#        -> pack full/lite/sdk -> verify zip contents.
 # The DSH plugin lives in its own repository (litterbit/dsh-plugin-moss-tts) and has its own CI.
 # Exits non-zero on the first failure.
 #
@@ -90,6 +91,10 @@ Step "playback simulation (worklet + player.js must not drop audio)"
 node (Join-Path $root "tools/playback_sim.mjs") --exe (Join-Path $buildDir "moss_tts.exe") --models $weightsDir --port 8791
 if ($LASTEXITCODE -ne 0) { Fail "playback simulation failed" }
 
+Step "clone chain (browser-side trim -> PCM WAV -> engine)"
+node (Join-Path $root "tools/clone_sim.mjs") --exe (Join-Path $buildDir "moss_tts.exe") --models $weightsDir --port 8793
+if ($LASTEXITCODE -ne 0) { Fail "clone simulation failed" }
+
 Step "script encoding guard"
 # Windows PowerShell 5.1 reads a .ps1 with no BOM as ANSI: a stray Chinese byte can eat the
 # next quote and break the parser in ways that only show up on a clean machine. Keep every
@@ -112,8 +117,8 @@ $zip = [IO.Compression.ZipFile]::OpenRead((Join-Path $root "dist/MossTTS-win-x64
 try {
     # Compress-Archive stores entry names with backslashes on Windows PowerShell 5.1: normalize first
     $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
-    $required = @("moss_tts.exe", "moss_clone.exe", "web/index.html", "web/app.js", "web/player.js",
-                  "web/pcm-worklet.js",
+    $required = @("moss_tts.exe", "moss_clone.exe", "web/index.html", "web/app.js", "web/clone-audio.js",
+                  "web/player.js", "web/pcm-worklet.js",
                   "models/llm_q8x4.moss", "models/decoder_f16.moss", "models/encoder_f16.moss",
                   "models/tokenizer.mossvocab", "models/manifest.json", "LICENSE", "NOTICE", "README.txt")
     $missing = $required | Where-Object { $names -notcontains $_ }

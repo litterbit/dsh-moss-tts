@@ -3,8 +3,10 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <string>
 
 namespace moss {
 namespace {
@@ -14,6 +16,30 @@ uint32_t le32(const uint8_t *p) {
            (static_cast<uint32_t>(p[3]) << 24);
 }
 uint16_t le16(const uint8_t *p) { return static_cast<uint16_t>(p[0] | (p[1] << 8)); }
+
+// 压缩格式的 WAV（MP3-in-WAV 就是我们踩过的坑）bits=0、block_align=1，
+// 单看块对齐会报出"WAV 块对齐不符合预期"这种没法定位的消息，所以先按格式给个准确的。
+const char *fmt_name(int tag) {
+    switch (tag) {
+        case 0x0001: return "PCM";
+        case 0x0003: return "IEEE float";
+        case 0x0002: return "MS ADPCM";
+        case 0x0006: return "A-law";
+        case 0x0007: return "mu-law";
+        case 0x0011: return "IMA ADPCM";
+        case 0x0050: return "MPEG";
+        case 0x0055: return "MP3";
+        case 0x00FF: return "AAC";
+        case 0xFFFE: return "WAVE_FORMAT_EXTENSIBLE";
+        default: return "未知格式";
+    }
+}
+
+std::string hex_tag(int tag) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "0x%04X", static_cast<unsigned>(tag));
+    return buf;
+}
 
 }  // namespace
 
@@ -59,9 +85,23 @@ bool wav_read(const std::string &path, std::vector<float> *interleaved, int *sam
         if (err) *err = "WAV 缺少 fmt/data 块: " + path;
         return false;
     }
+    if (fmt_tag != 1 && fmt_tag != 3) {
+        if (err) {
+            *err = std::string("参考音频是 ") + fmt_name(fmt_tag) + " 编码（" + hex_tag(fmt_tag) +
+                   "），不是 PCM；请在网页里直接拖入音频（浏览器会解码），或先把文件转成 PCM WAV";
+        }
+        return false;
+    }
     const int bytes_per_sample = bits / 8;
-    if (bytes_per_sample <= 0 || block_align != bytes_per_sample * ch) {
-        if (err) *err = "WAV 块对齐不符合预期";
+    if (bytes_per_sample <= 0) {
+        if (err) *err = "WAV 位深不合法（" + std::to_string(bits) + " 位）";
+        return false;
+    }
+    if (block_align != bytes_per_sample * ch) {
+        if (err) {
+            *err = "WAV 块对齐 " + std::to_string(block_align) + " 与 " + std::to_string(ch) + " 声道 × " +
+                   std::to_string(bits) + " 位（" + std::to_string(bytes_per_sample * ch) + "）不符";
+        }
         return false;
     }
     const size_t frames = data_bytes / static_cast<size_t>(block_align);

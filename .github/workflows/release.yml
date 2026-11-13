@@ -106,6 +106,12 @@ jobs:
           node tools/playback_sim.mjs --exe csrc\build\moss_tts.exe --models weights --port 8791
           if ($LASTEXITCODE -ne 0) { throw "playback simulation failed" }
 
+      - name: Clone chain (browser-side trim -> PCM WAV -> engine)
+        shell: pwsh
+        run: |
+          node tools/clone_sim.mjs --exe csrc\build\moss_tts.exe --models weights --port 8793
+          if ($LASTEXITCODE -ne 0) { throw "clone simulation failed" }
+
       - name: Pack full / lite / sdk
         shell: pwsh
         run: pwsh -NoProfile -File scripts/pack_release.ps1 -Mode all -Tag $env:MOSS_VERSION
@@ -118,8 +124,8 @@ jobs:
           try {
             # Compress-Archive 在 Windows PowerShell 5.1 里用反斜杠存条目名，先归一化再比对
             $names = $zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') }
-            $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/player.js",
-                          "web/pcm-worklet.js",
+            $required = @("moss_tts.exe","moss_clone.exe","web/index.html","web/app.js","web/clone-audio.js",
+                          "web/player.js","web/pcm-worklet.js",
                           "models/llm_q8x4.moss","models/decoder_f16.moss","models/encoder_f16.moss",
                           "models/tokenizer.mossvocab","models/manifest.json","LICENSE","NOTICE","README.txt")
             $missing = $required | Where-Object { $names -notcontains $_ }

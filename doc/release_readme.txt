@@ -19,7 +19,12 @@ MOSS-TTS CPU 推理引擎 {{TAG}}  （Windows x64）
   moss_tts.exe --text "..." --pcm-raw - > out.pcm      （流式 s16le / 48 kHz / 立体声）
   moss_tts.exe --list-voices
   moss_clone.exe --encoder models/encoder_f16.moss --in ref.wav --out models/voices/me.mossclone --name me
+  moss_clone.exe ... --in ref.wav --start 12 --seconds 8      （选 12 s 起 8 秒，最长 20 秒）
   moss_tts.exe --version
+
+  克隆最省事的做法：双击 moss_tts.exe 打开本地页面，把 MP3 / WAV / M4A / OGG / FLAC
+  拖进「克隆音色」，拖选片段、试听、创建。浏览器在本机解码，文件不上传。
+  命令行只吃 PCM WAV（压缩格式先转换），参考音频上限 20 秒。
 
 三、程序自己的数据
   便携模式：models/ 在 exe 旁边时，缓存与克隆音色写到 exe 同级的 userdata/。

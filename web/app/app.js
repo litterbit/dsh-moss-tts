@@ -108,10 +108,15 @@
     const res = await fetch(API + '/api/v1/voices');
     if (!res.ok) throw new Error('音色列表读取失败');
     const data = await res.json();
-    state.voices = { builtin: data.builtin || [], user: data.user || [] };
+    state.voices = { builtin: data.builtin || [], user: data.user || [], default: data.default || '' };
     const sel = $('voice');
     const previous = sel.value;
     sel.innerHTML = '';
+    const text = (v, kind) => {
+      if (kind === 'user') return `${v.id} · 克隆`;
+      // 内置音色显示中文名，客户端 id 放在括号里（API 里说话要用它）
+      return v.label && v.label !== v.id ? `${v.label}（${v.id}）` : v.id;
+    };
     const addGroup = (label, items, kind) => {
       if (!items.length) return;
       const group = document.createElement('optgroup');
@@ -119,15 +124,25 @@
       for (const v of items) {
         const option = document.createElement('option');
         option.value = `${kind}:${v.id}`;
-        option.textContent = kind === 'user' ? `${v.id} · 克隆` : v.id;
+        option.textContent = text(v, kind);
+        option.title = kind === 'user' ? `克隆音色 ${v.id}` : `内置音色 ${v.id}`;
         group.appendChild(option);
       }
       sel.appendChild(group);
     };
     addGroup(`内置音色（${state.voices.builtin.length}）`, state.voices.builtin, 'builtin');
     addGroup(`我的音色（${state.voices.user.length}）`, state.voices.user, 'user');
-    if (previous && [...sel.options].some((o) => o.value === previous)) sel.value = previous;
-    else if (state.voices.user.length) sel.value = `user:${state.voices.user[0].id}`;
+    // 选中顺序：上次用的 → 服务端说的默认音色（manqu/满满）→ 第一个内置 → 第一个用户音色
+    const options = [...sel.options];
+    const has = (value) => options.some((o) => o.value === value);
+    let chosen = previous && has(previous) ? previous : '';
+    if (!chosen) {
+      const flagged = state.voices.builtin.find((v) => v.default) ||
+                      state.voices.builtin.find((v) => v.id === (state.voices.default || 'manqu'));
+      if (flagged) chosen = `builtin:${flagged.id}`;
+      else if (options.length) chosen = options[0].value;
+    }
+    if (chosen) sel.value = chosen;
   }
 
   async function initAudio() {
@@ -356,29 +371,318 @@
     }
   }
 
-  async function createVoice() {
-    const file = $('clone-file').files[0];
-    const name = ($('clone-name').value || '').trim();
-    if (!file) { setStatus('先选一个 WAV 文件', 'err'); return; }
-    if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) { setStatus('音色名只能是字母、数字、_ 或 -', 'err'); return; }
-    setStatus('正在编码音色…');
+  // ---- 音色克隆：拖入音频 → 浏览器解码 → 在波形上选一段（≤20 s）→ 本地编码 ----------
+  // 为什么在浏览器里解码：引擎是零依赖的 C++，装不下 MP3/AAC 解码器；而浏览器的
+  // decodeAudioData 什么格式都能解，还能顺手把采样率转成 48 kHz。引擎只收 PCM WAV。
+  const Trim = window.MossCloneAudio;
+  const clone = {
+    channels: [],            // 48 kHz 浮点样点（AudioBuffer 的视图，不复制）
+    total: 0,                // 秒
+    window: { start: 0, end: 0 },
+    peaks: null,
+    peakCols: 0,
+    ctx: null,               // 试听用的 AudioContext（懒建）
+    preview: null,
+    raf: 0,
+    drag: null,              // 'start' | 'end' | 'move'
+    anchor: 0,
+    busy: false,
+  };
+
+  function cloneStatus(text, kind = '') {
+    const el = $('clone-status');
+    el.textContent = text;
+    el.className = 'status' + (kind ? ' ' + kind : '');
+  }
+
+  function cloneTip(text) { $('clone-tip').textContent = text; }
+
+  function stopPreview() {
+    if (clone.raf) { cancelAnimationFrame(clone.raf); clone.raf = 0; }
+    if (clone.preview) {
+      try { clone.preview.source.stop(); } catch { /* 已经停了 */ }
+      try { clone.preview.source.disconnect(); } catch { /* 忽略 */ }
+      clone.preview = null;
+    }
+    $('clone-play').textContent = '试听这一段';
+    if (clone.channels.length) drawWave();
+  }
+
+  /** 波形：高亮选中区、两端手柄、试听播放头。全程设备像素，1 px 柱状。 */
+  function drawWave(playhead) {
+    const canvas = $('clone-canvas');
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round((canvas.clientWidth || 640) * dpr));
+    const height = Math.max(1, Math.round((canvas.clientHeight || 88) * dpr));
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, width, height);
+    if (!clone.channels.length || !clone.total) return;
+    if (!clone.peaks || clone.peakCols !== width) {
+      clone.peaks = Trim.peaks(clone.channels, width);
+      clone.peakCols = width;
+    }
+    const startX = (clone.window.start / clone.total) * width;
+    const endX = (clone.window.end / clone.total) * width;
+    ctx.fillStyle = 'rgba(79,140,255,0.15)';
+    ctx.fillRect(startX, 0, Math.max(1, endX - startX), height);
+    const mid = height / 2;
+    for (let x = 0; x < width; ++x) {
+      const inside = x >= startX && x <= endX;
+      const amp = Math.max(0.04, clone.peaks[x]);
+      const bar = Math.max(1, amp * (height - 6));
+      ctx.fillStyle = inside ? '#7ba7ff' : '#39415a';
+      ctx.fillRect(x, mid - bar / 2, 1, bar);
+    }
+    ctx.fillStyle = '#4f8cff';
+    ctx.fillRect(Math.max(0, Math.round(startX) - 1), 0, 2, height);
+    ctx.fillRect(Math.min(width - 2, Math.round(endX) - 1), 0, 2, height);
+    if (playhead != null && playhead >= 0 && playhead <= clone.total) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(Math.round((playhead / clone.total) * width), 0, 1, height);
+    }
+  }
+
+  function syncTrim() {
+    const { start, end } = clone.window;
+    const total = clone.total;
+    $('clone-range').textContent = `${start.toFixed(1)} – ${end.toFixed(1)} s`;
+    $('clone-len').textContent = Trim.formatSeconds(end - start);
+    $('clone-start-v').textContent = Trim.formatSeconds(start);
+    $('clone-end-v').textContent = Trim.formatSeconds(end);
+    for (const [id, value] of [['clone-start', start], ['clone-end', end]]) {
+      const el = $(id);
+      el.max = total.toFixed(2);
+      el.value = value.toFixed(2);
+    }
+    $('clone-go').disabled = clone.busy || !clone.channels.length || end - start < 0.5;
+    drawWave();
+  }
+
+  function setWindow(next) {
+    clone.window = next;
+    stopPreview();
+    syncTrim();
+  }
+
+  function timeAt(clientX) {
+    const rect = $('clone-canvas').getBoundingClientRect();
+    const ratio = rect.width ? (clientX - rect.left) / rect.width : 0;
+    return Math.max(0, Math.min(clone.total, ratio * clone.total));
+  }
+
+  function cloneReset() {
+    stopPreview();
+    clone.channels = [];
+    clone.total = 0;
+    clone.window = { start: 0, end: 0 };
+    clone.peaks = null;
+    clone.peakCols = 0;
+    $('clone-editor').classList.add('hidden');
+    $('clone-range').textContent = '0.0 – 0.0 s';
+    $('clone-len').textContent = '0.0 s';
+    $('clone-file-name').textContent = '';
+    $('clone-go').disabled = true;
+    cloneTip('');
+  }
+
+  /** OfflineAudioContext 自带采样率换算：MP3/M4A/AAC/OGG/FLAC 解出来就是 48 kHz。 */
+  async function decodeClip(file) {
+    if (file.size > 100 * 1024 * 1024) throw new Error('文件超过 100 MB，先截一段再拖进来');
+    const bytes = await file.arrayBuffer();
+    const off = new OfflineAudioContext(2, Trim.RATE, Trim.RATE);
+    const buffer = await off.decodeAudioData(bytes);
+    if (buffer.duration > 900) {
+      throw new Error(`这段音频 ${buffer.duration.toFixed(0)} 秒太长了，先用剪辑软件截一段`);
+    }
+    return buffer;
+  }
+
+  async function loadClip(file) {
+    if (!file) return;
+    cloneStatus('正在解码音频…');
     try {
-      const bytes = await file.arrayBuffer();
+      const buffer = await decodeClip(file);
+      stopPreview();
+      const left = buffer.getChannelData(0);
+      const right = buffer.numberOfChannels > 1 ? buffer.getChannelData(1) : left;
+      clone.channels = [left, right];
+      clone.total = Math.max(0.001, left.length / Trim.RATE);
+      clone.peaks = null;
+      clone.peakCols = 0;
+      clone.window = Trim.defaultWindow(clone.total);
+      $('clone-file-name').textContent = `${file.name} · ${clone.total.toFixed(1)} s`;
+      $('clone-editor').classList.remove('hidden');
+      if (!($('clone-name').value || '').trim()) $('clone-name').value = Trim.suggestName(file.name);
+      syncTrim();
+      const long = clone.total > Trim.MAX_SECONDS;
+      cloneTip(long ? '超过 20 秒：把「终点」往右拖，20 秒窗口会整段滑过去' : '整段都能用，也可以再剪短一点');
+      cloneStatus(`已载入 ${clone.total.toFixed(1)} s${long ? '，请选一段（≤20 s）' : ''}`, 'ok');
+    } catch (err) {
+      cloneReset();
+      cloneStatus('读不了这个文件：' + (err && err.message ? err.message : err), 'err');
+      if (!String(err).includes('太长') && !String(err).includes('MB')) {
+        cloneTip('浏览器不支持这个编码时可以先用工具转成 MP3 或 WAV');
+      }
+    }
+  }
+
+  async function playPreview() {
+    if (!clone.channels.length) return;
+    stopPreview();
+    try {
+      if (!clone.ctx) {
+        try { clone.ctx = new AudioContext({ sampleRate: Trim.RATE }); }
+        catch { clone.ctx = new AudioContext(); }
+      }
+      const ctx = clone.ctx;
+      if (ctx.state === 'suspended') await ctx.resume();
+      const [left, right] = Trim.sliceWindow(clone.channels, clone.window);
+      if (!left.length) return;
+      const buffer = ctx.createBuffer(2, left.length, Trim.RATE);
+      buffer.copyToChannel(left, 0);
+      buffer.copyToChannel(right, 1);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      const offset = clone.window.start;
+      source.start();
+      clone.preview = { source, startedAt: ctx.currentTime, length: left.length / Trim.RATE };
+      $('clone-play').textContent = '停止试听';
+      const tick = () => {
+        if (!clone.preview) return;
+        const elapsed = ctx.currentTime - clone.preview.startedAt;
+        drawWave(offset + elapsed);
+        if (elapsed < clone.preview.length) clone.raf = requestAnimationFrame(tick);
+        else stopPreview();
+      };
+      tick();
+    } catch (err) {
+      cloneStatus('试听失败：' + (err.message || err), 'err');
+    }
+  }
+
+  async function createVoice() {
+    if (!clone.channels.length) { cloneStatus('先拖一段音频进来', 'err'); return; }
+    const name = ($('clone-name').value || '').trim();
+    if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) {
+      cloneStatus('音色名只能是字母、数字、_ 或 -', 'err');
+      return;
+    }
+    const length = clone.window.end - clone.window.start;
+    if (length < 0.5) { cloneStatus('选的片段太短，至少 1 秒', 'err'); return; }
+    stopPreview();
+    clone.busy = true;
+    $('clone-go').disabled = true;
+    cloneStatus(`正在编码音色…（${length.toFixed(1)} s 参考音频）`);
+    try {
+      const [left, right] = Trim.sliceWindow(clone.channels, clone.window);
+      const wav = Trim.buildWav16([left, right], Trim.RATE);
       const res = await fetch(`${API}/api/v1/voices/clone?name=${encodeURIComponent(name)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'audio/wav' },
-        body: bytes,
+        body: wav,
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       await loadVoices();
       $('voice').value = `user:${name}`;
-      setStatus(`音色 ${name} 已创建（${data.user?.find((v) => v.id === name)?.seconds?.toFixed(2) || '?'} s 参考）`, 'ok');
-      $('clone-name').value = '';
-      $('clone-file').value = '';
+      const seconds = data.user?.find((v) => v.id === name)?.seconds;
+      cloneStatus(`音色 ${name} 已创建${seconds ? `（${seconds.toFixed(2)} s）` : ''}`, 'ok');
+      cloneTip('已存进本机用户音色目录，现在就能在上面选它');
     } catch (err) {
-      setStatus('克隆失败：' + (err.message || err), 'err');
+      cloneStatus('克隆失败：' + (err.message || err), 'err');
+    } finally {
+      clone.busy = false;
+      $('clone-go').disabled = !clone.channels.length;
     }
+  }
+
+  // ---- 性能面板：两套线程数写进 <data>/settings.json，重启进程生效 ----------
+  async function loadThreads() {
+    if (!API) return;
+    try {
+      const [settings, info] = await Promise.all([
+        fetch(API + '/api/v1/settings').then((r) => (r.ok ? r.json() : null)),
+        fetch(API + '/api/v1/info').then((r) => r.json()),
+      ]);
+      if (!settings) throw new Error('这个引擎版本没有 /settings');
+      const eng = info.engine || {};
+      const llm = settings.llm_threads || eng.llm_threads || 0;
+      const dec = settings.decode_threads || eng.decode_threads || 0;
+      // 输入框里放"正在生效"的数字（自动模式下也是具体值），不显示 0+0
+      $('th-llm').value = llm;
+      $('th-decode').value = dec;
+      $('th-llm-v').textContent = settings.auto ? `${llm}（自动）` : String(llm);
+      $('th-decode-v').textContent = settings.auto ? `${dec}（自动）` : String(dec);
+      $('th-status').className = 'status';
+      $('th-status').textContent = `正在使用 ${llm}+${dec} 线程`;
+    } catch {
+      $('th-status').textContent = '这个引擎版本不支持在线改线程数';
+    }
+  }
+
+  async function saveThreads() {
+    const body = {
+      llm_threads: Number($('th-llm').value) || 0,
+      decode_threads: Number($('th-decode').value) || 0,
+    };
+    $('th-status').className = 'status';
+    $('th-status').textContent = '保存中…';
+    try {
+      const res = await fetch(API + '/api/v1/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const llm = data.llm_threads || 0;
+      const dec = data.decode_threads || 0;
+      $('th-llm-v').textContent = llm ? String(llm) : '自动';
+      $('th-decode-v').textContent = dec ? String(dec) : '自动';
+      $('th-status').className = 'status ok';
+      $('th-status').textContent = `已保存 ${llm || '自动'}+${dec || '自动'}，点「重启引擎」生效`;
+    } catch (err) {
+      $('th-status').className = 'status err';
+      $('th-status').textContent = '保存失败：' + (err.message || err);
+    }
+  }
+
+  /** 让引擎自己重起一个进程（服务端 spawn 新进程后退出），页面跟着刷新。 */
+  async function restartEngine() {
+    const button = $('th-restart');
+    button.disabled = true;
+    $('th-status').className = 'status';
+    $('th-status').textContent = '正在重启…';
+    try {
+      const res = await fetch(API + '/api/v1/restart', { method: 'POST' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      button.disabled = false;
+      $('th-status').className = 'status err';
+      $('th-status').textContent = '重启失败：' + (err.message || err);
+      return;
+    }
+    // 旧进程退出、新进程接管端口；端口若顺延了，页面跟着跳过去
+    const deadline = Date.now() + 25000;
+    const poll = async () => {
+      const base = await findLocalEngine();
+      if (base) {
+        if (base !== location.origin) location.replace(base + '/');
+        else location.reload();
+        return;
+      }
+      if (Date.now() > deadline) {
+        button.disabled = false;
+        $('th-status').className = 'status err';
+        $('th-status').textContent = '没等到新引擎起来，请手动重新运行 moss_tts.exe';
+        return;
+      }
+      setTimeout(poll, 400);
+    };
+    setTimeout(poll, 600);
   }
 
   function saveWav() {
@@ -396,12 +700,95 @@
   $('stop').onclick = stop;
   $('save').onclick = saveWav;
   $('clone-go').onclick = createVoice;
+  $('th-save').onclick = saveThreads;
+  $('th-restart').onclick = restartEngine;
+  $('clone-play').onclick = () => (clone.preview ? stopPreview() : playPreview());
+  $('clone-reset').onclick = () => {
+    if (!clone.total) return;
+    clone.window = { start: 0, end: Math.min(Trim.MAX_SECONDS, clone.total) };
+    stopPreview();
+    syncTrim();
+    cloneTip(clone.total > Trim.MAX_SECONDS ? '已回到开头 20 秒；把「终点」往右拖可以把窗口往后滑'
+                                            : '已选中整段');
+  };
+  $('clone-start').oninput = (event) =>
+    setWindow(Trim.dragWindow(clone.total, clone.window, 'start', Number(event.target.value)));
+  $('clone-end').oninput = (event) =>
+    setWindow(Trim.dragWindow(clone.total, clone.window, 'end', Number(event.target.value)));
+
+  // 波形上直接拖：两端是裁剪手柄，中间整段平移，外面点一下就把窗口挪过去
+  const canvas = $('clone-canvas');
+  const grabSeconds = () => Math.max(0.2, clone.total * 0.012);
+  canvas.addEventListener('pointerdown', (event) => {
+    if (!clone.channels.length) return;
+    const t = timeAt(event.clientX);
+    if (Math.abs(t - clone.window.start) <= grabSeconds()) clone.drag = 'start';
+    else if (Math.abs(t - clone.window.end) <= grabSeconds()) clone.drag = 'end';
+    else if (t > clone.window.start && t < clone.window.end) {
+      clone.drag = 'move';
+      clone.anchor = t - clone.window.start;
+    } else {
+      clone.drag = 'move';
+      clone.anchor = (clone.window.end - clone.window.start) / 2;
+      setWindow(Trim.moveWindow(clone.total, clone.window, t - clone.anchor));
+    }
+    canvas.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  canvas.addEventListener('pointermove', (event) => {
+    if (!clone.channels.length) return;
+    const t = timeAt(event.clientX);
+    if (!clone.drag) {
+      canvas.style.cursor = Math.abs(t - clone.window.start) <= grabSeconds() ||
+                            Math.abs(t - clone.window.end) <= grabSeconds() ? 'ew-resize' : 'crosshair';
+      return;
+    }
+    if (clone.drag === 'move') setWindow(Trim.moveWindow(clone.total, clone.window, t - clone.anchor));
+    else setWindow(Trim.dragWindow(clone.total, clone.window, clone.drag, t));
+  });
+  const endDrag = () => { clone.drag = null; };
+  canvas.addEventListener('pointerup', endDrag);
+  canvas.addEventListener('pointercancel', endDrag);
+
+  const drop = $('clone-drop');
+  const fileInput = $('clone-file');
+  let dragDepth = 0;
+  drop.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files && fileInput.files[0];
+    fileInput.value = '';   // 允许连续拖同一个文件
+    loadClip(file);
+  });
+  drop.addEventListener('dragenter', (event) => {
+    event.preventDefault();
+    if (++dragDepth === 1) drop.classList.add('over');
+  });
+  drop.addEventListener('dragover', (event) => event.preventDefault());
+  drop.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    if (--dragDepth <= 0) { dragDepth = 0; drop.classList.remove('over'); }
+  });
+  drop.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dragDepth = 0;
+    drop.classList.remove('over');
+    const file = event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0];
+    if (file) loadClip(file);
+  });
+  // 拖偏到页面空白处时，别让浏览器直接打开文件
+  window.addEventListener('dragover', (event) => event.preventDefault());
+  window.addEventListener('drop', (event) => event.preventDefault());
+  window.addEventListener('resize', () => {
+    clone.peakCols = 0;
+    if (clone.channels.length) drawWave();
+  });
   $('retry').onclick = async () => {
     setStatus('正在检测…');
     if (await probe()) {
       try {
         await loadVoices();
         setStatus('已连接本地引擎', 'ok');
+        loadThreads();
       } catch (err) {
         setStatus('音色列表加载失败：' + (err.message || err), 'err');
       }
@@ -421,5 +808,6 @@
     } catch (err) {
       setStatus('音色列表加载失败：' + (err.message || err), 'err');
     }
+    loadThreads();
   })();
 })();

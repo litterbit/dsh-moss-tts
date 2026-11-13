@@ -25,7 +25,7 @@ moss_tts.exe --models models --selftest
 |---|---|
 | `--voice <名字>` | 内置音色（`models/voices/*.mossclone`） |
 | `--profile <文件>` | 自定义音色档案 |
-| `--threads 4` / `--decode-threads 6` | LLM / 解码器的线程数（解码器是瓶颈，可以多给） |
+| `--threads 2` / `--decode-threads 3` | LLM / 解码器的线程数，默认 2+3；想更快试 4+4、4+6。网页「性能」面板也能改（写进 `userdata/settings.json`），改完点面板上的「重启引擎」 |
 | `--chunk 8` | 解码块大小（帧）；越小首音越快，4 帧≈21 ms 首块 |
 | `--seed 0` | 采样种子（同一 seed 输出确定） |
 | `--greedy` | 关掉采样（完全确定，但**不会自然结束**，要配 `--frames`） |
@@ -34,14 +34,23 @@ moss_tts.exe --models models --selftest
 
 ## 音色克隆
 
-参考音频要求：**PCM WAV**（16/24/32-bit 或 float32），任意采样率（内部重采样到 48 kHz），
-单声道会自动复制成立体声。MP3/AAC 等压缩格式请先转成 WAV。
+最省事的做法是打开本地页面（双击 `moss_tts.exe` 会自动打开），在「克隆音色」里
+**把音频文件拖进去**：MP3 / WAV / M4A / OGG / FLAC 都行（浏览器在本机解码，不上传）。
+拖进去之后可以在波形上拖两端选片段、点「试听这一段」听一遍，再创建音色。
+
+命令行等价物：
 
 ```bat
 moss_clone.exe --encoder models/encoder_f16.moss --in my_voice.wav --out models/voices/me.mossclone --name me
+moss_clone.exe --encoder models/encoder_f16.moss --in long.mp3.wav --start 12 --seconds 8 --out models/voices/me.mossclone
 
 moss_tts.exe --models models --profile models/voices/me.mossclone --text "你好，这是我的声音。" --out me.wav
 ```
+
+参考音频要求：**PCM WAV**（16/24/32-bit 或 float32），任意采样率（内部重采样到 48 kHz），
+单声道会自动复制成立体声。**最长取 20 秒**（`--start` 选起点、`--seconds` 选长度，超出部分自动截掉）；
+5~15 秒单人、无背景音乐的片段效果最好。
+命令行只吃 PCM：MP3/AAC/OGG 这类压缩格式先用工具转成 WAV（网页那条路不用管，浏览器会解码）。
 
 `.mossclone` 只有几 KB（16 路 × N 帧音频码），可以直接发给别人；
 对方再用 `--profile` 就能复现同一种音色。

@@ -63,6 +63,17 @@
   label.chk { display: inline-flex; align-items: center; gap: 7px; margin: 0; font-size: 13px;
               color: var(--muted); cursor: pointer; user-select: none; }
   label.chk input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
+  .drop { border: 1px dashed var(--line); border-radius: 10px; padding: 16px; text-align: center;
+          color: var(--muted); background: #0d1016; cursor: pointer; transition: border-color .15s, background .15s; }
+  .drop:hover, .drop.over { border-color: var(--accent); background: #111a2b; }
+  .drop b { color: var(--text); font-weight: 600; }
+  .drop .small { font-size: 12px; margin-top: 5px; }
+  .clone-head { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+                font-size: 12px; color: var(--muted); margin: 13px 0 7px; }
+  .clone-head b { color: var(--text); font-weight: 600; }
+  canvas#clone-canvas { display: block; width: 100%; height: 88px; border: 1px solid var(--line);
+                        border-radius: 8px; background: #0d1016; touch-action: none; cursor: crosshair; }
+  .trim b { color: var(--text); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -89,7 +100,7 @@
 
   <div class="panel">
     <label for="text">文本</label>
-    <textarea id="text">你好，我是 MOSS 语音助手。这段语音完全在你的电脑上合成，不需要联网，也不会把文字发到任何地方。</textarea>
+    <textarea id="text">你好，我是deepseek助手，很高兴为您服务。</textarea>
 
     <div class="row">
       <div class="field">
@@ -132,19 +143,72 @@
   </div>
 
   <div class="panel">
-    <label>克隆音色（上传一段 5~15 秒的 WAV，本地编码，几秒钟）</label>
-    <div class="row" style="margin-top:0">
-      <div class="field" style="flex:2 1 260px">
-        <input id="clone-file" type="file" accept=".wav,audio/wav" style="color:var(--muted)">
+    <label>克隆音色（拖入一段音频，选 5~20 秒做参考，本地编码，几秒钟）</label>
+    <div class="drop" id="clone-drop">
+      <input id="clone-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.webm" hidden>
+      <div><b>把音频文件拖到这里</b>，或者<b>点这里选文件</b></div>
+      <div class="small">MP3 / WAV / M4A / OGG / FLAC 都行；浏览器在本机解码，文件不会上传</div>
+    </div>
+
+    <div id="clone-editor" class="hidden">
+      <div class="clone-head">
+        <span>已选中 <b id="clone-range">0.0 – 0.0 s</b>（<b id="clone-len">0.0 s</b>）</span>
+        <span id="clone-file-name"></span>
       </div>
+      <canvas id="clone-canvas" height="88"></canvas>
+      <div class="row">
+        <div class="field trim">
+          <label for="clone-start">起点 <b id="clone-start-v">0.0 s</b></label>
+          <input id="clone-start" type="range" min="0" max="0" step="0.05" value="0">
+        </div>
+        <div class="field trim">
+          <label for="clone-end">终点 <b id="clone-end-v">0.0 s</b></label>
+          <input id="clone-end" type="range" min="0" max="0" step="0.05" value="0">
+        </div>
+      </div>
+      <div class="actions" style="margin-top:12px">
+        <button id="clone-play">试听这一段</button>
+        <button id="clone-reset">选整段</button>
+        <span class="status" id="clone-tip"></span>
+      </div>
+    </div>
+
+    <div class="row">
       <div class="field">
         <input id="clone-name" type="text" placeholder="音色名（英文/数字/_/-）">
       </div>
       <div class="field" style="flex:0 0 auto">
-        <button id="clone-go">创建音色</button>
+        <button class="primary" id="clone-go" disabled>创建音色</button>
       </div>
+      <span class="status" id="clone-status"></span>
     </div>
-    <div class="hint">参考音频只在本机处理；生成的音色档案只有几 KB，保存在本机用户目录。</div>
+    <div class="hint">波形上可以直接拖两端；参考音频只在本机处理，生成的音色档案只有几 KB，存在本机用户目录。</div>
+  </div>
+
+  <div class="panel">
+    <label>性能（线程数，重启生效）</label>
+    <div class="row" style="margin-top:0">
+      <div class="field">
+        <label for="th-llm">LLM 线程 <b id="th-llm-v">自动</b></label>
+        <input id="th-llm" type="number" min="0" max="32" step="1" value="0">
+      </div>
+      <div class="field">
+        <label for="th-decode">解码器线程 <b id="th-decode-v">自动</b></label>
+        <input id="th-decode" type="number" min="0" max="32" step="1" value="0">
+      </div>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end">
+        <button id="th-save">保存</button>
+      </div>
+      <div class="field" style="flex:0 0 auto; align-self:flex-end">
+        <button id="th-restart" title="用新的线程数重新起进程（页面会自动刷新）">重启引擎</button>
+      </div>
+      <span class="status" id="th-status">—</span>
+    </div>
+    <div class="hint">
+      默认 2+3（LLM 2 / 解码器 3），单核机器 1+1。两套独立线程池：LLM 出码 和 音频解码器，峰值时同时忙「两个数之和」个核；
+      线程数只影响速度与发热，<b>不影响音频内容</b>。想更快可以试 4+4 或 4+6，安静省电就保持 2+3。
+      填 <code>0</code> = 按 CPU 自动。改完点「保存」，再点「重启引擎」即可生效（也可以自己重开 moss_tts.exe）。
+    </div>
   </div>
 
   <div class="panel">
@@ -155,6 +219,7 @@
   <div class="hint">引擎：MOSS-TTS-Nano-100M（int8 4×4 权重 / W8A16 解码 / fp16 解码器）。<a href="/api/v1/info" target="_blank" rel="noreferrer">查看运行时信息</a></div>
 </div>
 <script src="player.js"></script>
+<script src="clone-audio.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -26,6 +26,7 @@
 
 #include "moss/json.h"
 #include "moss/runtime.h"
+#include "moss/settings.h"
 #include "moss/version.h"
 
 namespace fs = std::filesystem;
@@ -146,6 +147,42 @@ const char *status_text(int status) {
         case 503: return "Service Unavailable";
         default: return "OK";
     }
+}
+
+// 用当前命令行再起一个自己（网页上的"重启"）。
+// 新进程固定带 --no-open（重启不该再弹一个浏览器窗口）和 --port-wait（等旧进程松开端口），
+// 旧进程发完响应就退出。
+bool spawn_restart(std::string *err) {
+    wchar_t exe[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, exe, MAX_PATH) == 0) {
+        if (err) *err = "取不到 exe 路径";
+        return false;
+    }
+    std::wstring cmd = GetCommandLineW();
+    // 原始命令行可能就只是 exe 路径（双击来的，"不带参数 = 起服务"）。子进程必须显式带 --serve，
+    // 否则 argc>1 时那一层判断不成立，新进程会打印用法然后退出。
+    if (cmd.find(L"--serve") == std::wstring::npos) cmd += L" --serve";
+    if (cmd.find(L"--no-open") == std::wstring::npos) cmd += L" --no-open";
+    if (cmd.find(L"--port-wait") == std::wstring::npos) cmd += L" --port-wait 5000";
+    std::vector<wchar_t> line(cmd.begin(), cmd.end());
+    line.push_back(L'\0');
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    // 先试着脱离当前 Job 对象：被别的程序（比如编辑器的任务、CI）用 kill-on-close job 拉起时，
+    // 子进程会跟着父进程一起被杀，重启就成了"关掉自己"。Job 不允许脱离时退回普通启动。
+    DWORD flags = CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB;
+    if (!CreateProcessW(exe, line.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi)) {
+        flags = CREATE_NEW_PROCESS_GROUP;
+        if (!CreateProcessW(exe, line.data(), nullptr, nullptr, FALSE, flags, nullptr, nullptr, &si, &pi)) {
+            if (err) *err = "启动新进程失败（错误码 " + std::to_string(GetLastError()) + "）";
+            return false;
+        }
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
 }
 
 struct Response {
@@ -391,15 +428,20 @@ std::string job_json(const JobInfo &info) {
 
 std::string voices_json(const Runtime &rt) {
     std::ostringstream out;
+    const std::string def = rt.default_voice();
+    std::vector<VoiceInfo> all = rt.voices();
+    auto one = [&](const VoiceInfo &v) {
+        out << "{\"id\":\"" << json_escape(v.id) << "\",\"label\":\"" << json_escape(v.label)
+            << "\",\"frames\":" << v.frames << ",\"seconds\":" << v.seconds
+            << ",\"default\":" << (v.id == def ? "true" : "false") << "}";
+    };
     out << "\"builtin\":[";
     bool first = true;
-    std::vector<VoiceInfo> all = rt.voices();
     for (const auto &v : all) {
         if (v.user) continue;
         if (!first) out << ",";
         first = false;
-        out << "{\"id\":\"" << json_escape(v.id) << "\",\"frames\":" << v.frames
-            << ",\"seconds\":" << v.seconds << "}";
+        one(v);
     }
     out << "],\"user\":[";
     first = true;
@@ -407,10 +449,9 @@ std::string voices_json(const Runtime &rt) {
         if (!v.user) continue;
         if (!first) out << ",";
         first = false;
-        out << "{\"id\":\"" << json_escape(v.id) << "\",\"frames\":" << v.frames
-            << ",\"seconds\":" << v.seconds << "}";
+        one(v);
     }
-    out << "]";
+    out << "],\"default\":\"" << json_escape(def) << "\"";
     return out.str();
 }
 
@@ -647,6 +688,8 @@ void Server::handle_tts(SOCKET sock, const Request &req, bool want_wav) {
     // 音色解析：只接受 id，路径由服务端拼；用户音色和内置音色分目录
     {
         const std::string scope = root.get("scope") ? root.get("scope")->as_string("builtin") : "builtin";
+        // 没指定音色 = 出厂默认（manqu/满满），与 CLI、插件走同一套逻辑
+        if (job.voice.empty()) job.voice = rt_.default_voice();
         if (!valid_voice_id(job.voice)) {
             resp.error(400, "bad_voice", "音色名不合法");
             return;
@@ -812,6 +855,65 @@ void Server::dispatch(SOCKET sock, Request &req) {
         resp.raw_json(200, "{" + voices_json(rt_) + "}");
         return;
     }
+    if (path == "/api/v1/settings") {
+        // 只有线程数：线程池随模型加载建好，改完必须重启进程才生效，所以这里只读写文件。
+        resp.cors_origin = cors;
+        EngineSettings st;
+        load_settings(rt_.options().data_dir, &st);
+        if (req.method == "GET") {
+            // 返回"生效中"的线程数（自动模式下也是真实数字，别让页面看到 0+0 去猜）
+            const int eff_llm = rt_.options().llm_threads;
+            const int eff_decode = rt_.options().decode_threads;
+            const bool auto_mode = st.llm_threads <= 0 && st.decode_threads <= 0;
+            resp.raw_json(200, "{\"llm_threads\":" + std::to_string(eff_llm) +
+                                   ",\"decode_threads\":" + std::to_string(eff_decode) +
+                                   ",\"auto\":" + (auto_mode ? "true" : "false") +
+                                   ",\"saved_llm_threads\":" + std::to_string(st.llm_threads) +
+                                   ",\"saved_decode_threads\":" + std::to_string(st.decode_threads) +
+                                   ",\"restart_required\":false}");
+            return;
+        }
+        if (req.method != "POST") {
+            resp.error(405, "method_not_allowed", "需要 GET 或 POST");
+            return;
+        }
+        JsonValue root;
+        std::string jerr;
+        if (!json_parse(req.body, &root, &jerr) || !root.is_object()) {
+            resp.error(400, "bad_json", "请求体不是 JSON 对象");
+            return;
+        }
+        if (const JsonValue *v = root.get("llm_threads")) st.llm_threads = v->as_int(st.llm_threads);
+        if (const JsonValue *v = root.get("decode_threads")) st.decode_threads = v->as_int(st.decode_threads);
+        st.llm_threads = std::max(0, std::min(64, st.llm_threads));
+        st.decode_threads = std::max(0, std::min(64, st.decode_threads));
+        std::string werr;
+        if (!save_settings(rt_.options().data_dir, st, &werr)) {
+            resp.error(500, "save_failed", werr);
+            return;
+        }
+        resp.raw_json(200, "{\"ok\":true,\"llm_threads\":" + std::to_string(st.llm_threads) +
+                               ",\"decode_threads\":" + std::to_string(st.decode_threads) +
+                               ",\"restart_required\":true}");
+        return;
+    }
+    if (path == "/api/v1/restart") {
+        // 网页上的「重启引擎」：起一个新进程接管，自己退出。端口由新进程的 --port-wait 等出来。
+        if (req.method != "POST") {
+            resp.error(405, "method_not_allowed", "需要 POST");
+            return;
+        }
+        resp.cors_origin = cors;
+        std::string rerr;
+        if (!spawn_restart(&rerr)) {
+            resp.error(500, "restart_failed", rerr);
+            return;
+        }
+        resp.raw_json(200, "{\"ok\":true,\"restarting\":true}");
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        std::fflush(nullptr);
+        ::ExitProcess(0);
+    }
     if (path.rfind("/api/v1/jobs/", 0) == 0) {
         std::string rest = path.substr(std::string("/api/v1/jobs/").size());
         const bool cancel = rest.size() > 7 && rest.compare(rest.size() - 7, 7, "/cancel") == 0;
@@ -896,25 +998,34 @@ bool serve_forever(Runtime &runtime, const ServerOptions &options, std::string *
     const int attempts = std::max(1, options.port_attempts);
     for (int i = 0; i < attempts; ++i) {
         const int candidate = options.port + i;
-        SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (s == INVALID_SOCKET) continue;
-        // Windows 上没有 SO_REUSEADDR 的 Unix 语义：用它会让两个进程能绑同一端口。
-        // 我们只要“本机唯一一个可信 TTS 服务”，所以用独占绑定。
-        BOOL exclusive = TRUE;
-        setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive),
-                   sizeof(exclusive));
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_port = htons(static_cast<unsigned short>(candidate));
-        addr.sin_addr.s_addr = inet_addr(options.host.c_str());
-        bool ok = ::bind(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
-        if (ok) ok = ::listen(s, 16) == 0;
-        if (ok) {
-            listen_sock = s;
-            port = candidate;
-            break;
+        // 首选端口可以等一下：网页上点"重启"时，新进程先起、旧进程后退出，
+        // 新进程必须等旧进程松开 8759，否则会顺延到 8760 让页面地址漂移。
+        const int tries = (i == 0 && options.port_wait_ms > 0)
+                              ? std::max(1, options.port_wait_ms / 100)
+                              : 1;
+        for (int t = 0; t < tries && listen_sock == INVALID_SOCKET; ++t) {
+            SOCKET s = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (s == INVALID_SOCKET) break;
+            // Windows 上没有 SO_REUSEADDR 的 Unix 语义：用它会让两个进程能绑同一端口。
+            // 我们只要“本机唯一一个可信 TTS 服务”，所以用独占绑定。
+            BOOL exclusive = TRUE;
+            setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, reinterpret_cast<const char *>(&exclusive),
+                       sizeof(exclusive));
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(static_cast<unsigned short>(candidate));
+            addr.sin_addr.s_addr = inet_addr(options.host.c_str());
+            bool ok = ::bind(s, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) == 0;
+            if (ok) ok = ::listen(s, 16) == 0;
+            if (ok) {
+                listen_sock = s;
+                port = candidate;
+                break;
+            }
+            closesocket(s);
+            if (t + 1 < tries) ::Sleep(100);
         }
-        closesocket(s);
+        if (listen_sock != INVALID_SOCKET) break;
     }
     if (listen_sock == INVALID_SOCKET) {
         if (err) *err = "端口被占用：" + std::to_string(options.port) + "~" +

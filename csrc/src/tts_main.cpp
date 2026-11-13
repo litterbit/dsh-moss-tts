@@ -21,6 +21,8 @@
 #include "moss/runtime.h"
 #include "moss/stdio_server.h"
 #include "moss/version.h"
+#include "moss/settings.h"
+#include "moss/voices.h"
 #include "moss/wav.h"
 
 #ifdef _WIN32
@@ -114,9 +116,9 @@ bool write_pcm16(const std::string &path, const std::vector<float> &interleaved)
 void print_usage() {
     std::fprintf(stderr,
                  "用法:\n"
-                 "  moss_tts [--serve] [--stdio] [--port 8759] [--no-open] [--web dir] [--data dir]\n"
+                 "  moss_tts [--serve] [--stdio] [--port 8759] [--port-wait ms] [--no-open] [--web dir] [--data dir]\n"
                  "           --models <dir> --text <文本> [--out x.wav] [--pcm-raw f|-]\n"
-                 "      [--voice Junhao | --profile x.mossclone] [--threads 0=auto] [--decode-threads 0=auto]\n"
+                 "      [--voice 音色 | --profile x.mossclone] [--threads 0=auto(2)] [--decode-threads 0=auto(2)]\n"
                  "      [--chunk 8] [--a16 off|decode|all] [--seed 0] [--greedy] [--frames 375] [--no-cache]\n"
                  "      [--temp 0.8] [--top-k 25] [--top-p 0.95] [--rep 1.2] [--greedy-frames 0]\n"
                  "      [--list-voices] [--selftest] [--version]\n"
@@ -130,7 +132,7 @@ int run(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     std::string models;
     std::string llm, decoder, encoder, vocab, voices, cache;
-    std::string text, text_file, out_path, raw_path, voice = "Junhao", profile;
+    std::string text, text_file, out_path, raw_path, voice, profile;
     std::string a16 = "decode";  // 发布默认：吐 token 阶段 A16
     int threads = 0;             // 0 = 按物理核自动
     int decode_threads = 0;
@@ -152,6 +154,7 @@ int run(int argc, char **argv) {
     bool show_version = false;
     bool cache_explicit = false;
     int serve_port = 8759;
+    int port_wait_ms = 0;
     std::string web_dir, data_dir, allow_origin;
 
     for (int i = 1; i < argc; ++i) {
@@ -189,6 +192,7 @@ int run(int argc, char **argv) {
         else if (a == "--stdio") stdio_mode = true;
         else if (a == "--port") serve_port = std::stoi(next());
         else if (a == "--no-open") open_browser = false;
+        else if (a == "--port-wait") port_wait_ms = std::stoi(next());
         else if (a == "--web") web_dir = next();
         else if (a == "--data") data_dir = next();
         else if (a == "--allow-origin") allow_origin = next();
@@ -234,8 +238,14 @@ int run(int argc, char **argv) {
             }
         }
         std::sort(names.begin(), names.end());
-        std::printf("{\"voices_dir\":\"%s\",\"count\":%zu,\"voices\":[", voices.c_str(), names.size());
-        for (size_t i = 0; i < names.size(); ++i) std::printf("%s\"%s\"", i ? "," : "", names[i].c_str());
+        const std::string def = pick_default_voice(voices);
+        std::printf("{\"voices_dir\":\"%s\",\"count\":%zu,\"default\":\"%s\",\"voices\":[", voices.c_str(),
+                    names.size(), def.c_str());
+        for (size_t i = 0; i < names.size(); ++i) {
+            const char *label = builtin_voice_label(names[i]);
+            std::printf("%s{\"id\":\"%s\",\"label\":\"%s\"%s}", i ? "," : "", names[i].c_str(),
+                        label ? label : names[i].c_str(), names[i] == def ? ",\"default\":true" : "");
+        }
         std::printf("]}\n");
         return names.empty() ? 2 : 0;
     }
@@ -247,7 +257,7 @@ int run(int argc, char **argv) {
         std::fprintf(stderr, "至少要给 --out 或 --pcm-raw 之一\n");
         return 1;
     }
-    if (!serve && !stdio_mode && threads <= 0) threads = 4;
+    if (!serve && !stdio_mode && threads <= 0) threads = 2;
     if (!serve && !stdio_mode && decode_threads <= 0) decode_threads = threads;
     // W8A16：off / decode / all（见 gemv.cpp 的 act16_enabled）
     _putenv_s("MOSS_A16", a16 == "off" ? "" : a16.c_str());
@@ -286,7 +296,13 @@ int run(int argc, char **argv) {
         ro.voices_dir = voices;
         ro.user_voices_dir = user_voices;
         ro.cache_dir = cache;
+        ro.data_dir = resolved_data;
         ro.manifest_path = dir_join(models, "manifest.json");
+        // 线程数优先级：命令行 > <data>/settings.json > 自动（2+2）
+        EngineSettings settings;
+        load_settings(resolved_data, &settings);
+        if (threads <= 0 && settings.llm_threads > 0) threads = settings.llm_threads;
+        if (decode_threads <= 0 && settings.decode_threads > 0) decode_threads = settings.decode_threads;
         ro.llm_threads = threads;  // 0 = 自动
         ro.decode_threads = decode_threads;
 
@@ -302,6 +318,7 @@ int run(int argc, char **argv) {
         ServerOptions so;
         so.web_dir = web_dir.empty() ? dir_join(exe_dir(), "web") : web_dir;
         so.port = serve_port;
+        so.port_wait_ms = port_wait_ms;
         so.open_browser = open_browser;
         if (!allow_origin.empty()) {
             // `--allow-origin none` = 完全禁止跨源（连项目门户页也不放行）
@@ -340,7 +357,7 @@ int run(int argc, char **argv) {
             std::fprintf(stderr, "%s\n", err.c_str());
             return 1;
         }
-    } else if (!engine.set_voice(voice, &err)) {
+    } else if (!engine.set_voice(voice.empty() ? pick_default_voice(voices) : voice, &err)) {
         std::fprintf(stderr, "%s\n", err.c_str());
         return 1;
     }

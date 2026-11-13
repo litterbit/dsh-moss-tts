@@ -48,18 +48,59 @@
 
 ```json
 {"ok":true,
- "builtin":[{"id":"Junhao","frames":98,"seconds":7.84}],
- "user":[{"id":"me","frames":120,"seconds":9.6}]}
+ "builtin":[{"id":"manqu","label":"满满","frames":44,"seconds":3.52,"default":true},
+            {"id":"Junhao","label":"俊豪","frames":98,"seconds":7.84,"default":false}],
+ "user":[{"id":"me","label":"me","frames":120,"seconds":9.6,"default":false}],
+ "default":"manqu"}
 ```
 
-`user` 来自用户数据目录（`<data>/voices/user/`），与内置音色物理隔离，升级覆盖不了。
+- `id` 是文件名，也是 `POST /tts/stream` 里 `voice` 该填的值；`label` 只是显示名
+  （内置音色有中文名，用户音色等于 id）。别拿 `label` 去请求合成。
+- `default` 标出厂默认音色：`manqu`（满满）存在就是它，否则是目录里第一个内置音色。
+  客户端不传 `voice` 时服务端也用这个。
+- `user` 来自用户数据目录（`<data>/voices/user/`），与内置音色物理隔离，升级覆盖不了。
+
+### `GET|POST /api/v1/settings`
+
+线程数设置（落在 `<data>/settings.json`），**改完要重启进程才生效**（线程池随模型加载建好）。
+
+```json
+GET  -> {"llm_threads":2,"decode_threads":3,"auto":true,
+         "saved_llm_threads":0,"saved_decode_threads":0,"restart_required":false}
+POST {"llm_threads":4,"decode_threads":6}
+     -> {"ok":true,"llm_threads":4,"decode_threads":6,"restart_required":true}
+```
+
+GET 返回的是**正在生效**的数字（自动模式下也是具体值，不会给 0+0）；`auto` 表示文件里没写死。
+`0` = 自动（默认 2+3，单核机器 1+1）；范围 0~64。优先级：命令行 `--threads/--decode-threads`
+> `settings.json` > 自动。线程数只影响速度与发热，**不影响音频内容**。
+
+### `POST /api/v1/restart`
+
+重启引擎：服务端起一个新进程（自动带 `--no-open --port-wait 5000`），发完响应后自己退出。
+新进程等旧进程松开端口，所以地址仍是同一个；页面轮询 `/health`，起来后自动刷新。
+
+```json
+-> {"ok":true,"restarting":true}
+```
+
+只用于网页上的「重启引擎」按钮，别拿它当进程管理接口。
 
 ### `POST /api/v1/voices/clone?name=<id>`
 
 请求体是 WAV 原始字节（`Content-Type: audio/wav`）。
 `name` 只能包含字母、数字、`_`、`-`，长度 ≤ 32。
 返回 `{"ok":true,"name":"me","builtin":[...],"user":[...]}`。
-参考音频要求：PCM 16/24/32-bit 或 float32，任意采样率（内部重采样到 48 kHz），建议 5~15 秒。
+
+参考音频要求：**PCM** 16/24/32-bit 或 float32，任意采样率（内部重采样到 48 kHz），长度 ≤ 20 秒；
+超过 20 秒返回 400 `参考音频最长 20 秒（这段 X.X 秒），请先裁剪`。
+压缩格式（MP3-in-WAV、AAC 等）返回 400 并指出真实编码，例如
+`参考音频是 MP3 编码（0x0055），不是 PCM`。**引擎只吃 PCM**：MP3/M4A/OGG/FLAC 由调用侧先解码，
+网页试听台就是在浏览器里用 `decodeAudioData` 解码、裁剪、重打包成 PCM WAV 再上传的
+（`web/app/clone-audio.js`）。
+
+最佳实践：5~15 秒、单人、无背景音乐的片段；网页上可以拖入音频后直接在波形上选段并试听，
+选段逻辑在 `web/app/clone-audio.js`（纯函数，`tools/clone_sim.mjs` 里有回归）。
 
 ### `POST /api/v1/tts/stream`
 

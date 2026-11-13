@@ -4,7 +4,7 @@
     "model_revision":  "q8x4-f16-r1",
     "model_format":  "moss-v1",
     "min_engine_version":  "0.1.0",
-    "hf_commit":  "0c2789e832781345ade5034d7bbd26cabd5d04e9",
+    "hf_commit":  "fa37a9706d97eafe457428f41ac80894e4f3890a",
     "files":  [
                   {
                       "path":  "llm_q8x4.moss",
@@ -60,6 +60,11 @@
                       "path":  "voices/Lingyu.mossclone",
                       "bytes":  7006,
                       "sha256":  "b3d67c78f04e4b7e2777d88188861122b78d5e928239bf7eee0e4e73ded9e51d"
+                  },
+                  {
+                      "path":  "voices/manqu.mossclone",
+                      "bytes":  3518,
+                      "sha256":  "db1b824c8f44e823875006e35e43635122cde18438c9241ed5a9ee4d3df88964"
                   },
                   {
                       "path":  "voices/Mei.mossclone",

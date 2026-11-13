@@ -138,6 +138,12 @@ int run_stdio_server(Runtime &runtime) {
         } else if (cmd == "info") {
             write_line("{\"id\":\"" + json_escape(id) + "\",\"type\":\"info\",\"info\":" + runtime.info_json() + "}");
         } else if (cmd == "voices") {
+            const std::string def = runtime.default_voice();
+            auto one = [&](const VoiceInfo &v) {
+                return "{\"id\":\"" + json_escape(v.id) + "\",\"label\":\"" + json_escape(v.label) +
+                       "\",\"frames\":" + std::to_string(v.frames) + ",\"seconds\":" +
+                       std::to_string(v.seconds) + ",\"default\":" + (v.id == def ? "true" : "false") + "}";
+            };
             std::string out = "{\"id\":\"" + json_escape(id) + "\",\"type\":\"voices\",\"builtin\":[";
             const auto voices = runtime.voices();
             bool first = true;
@@ -145,8 +151,7 @@ int run_stdio_server(Runtime &runtime) {
                 if (v.user) continue;
                 if (!first) out += ",";
                 first = false;
-                out += "{\"id\":\"" + json_escape(v.id) + "\",\"frames\":" + std::to_string(v.frames) +
-                       ",\"seconds\":" + std::to_string(v.seconds) + "}";
+                out += one(v);
             }
             out += "],\"user\":[";
             first = true;
@@ -154,10 +159,9 @@ int run_stdio_server(Runtime &runtime) {
                 if (!v.user) continue;
                 if (!first) out += ",";
                 first = false;
-                out += "{\"id\":\"" + json_escape(v.id) + "\",\"frames\":" + std::to_string(v.frames) +
-                       ",\"seconds\":" + std::to_string(v.seconds) + "}";
+                out += one(v);
             }
-            out += "]}";
+            out += "],\"default\":\"" + json_escape(def) + "\"}";
             write_line(out);
         } else if (cmd == "cancel") {
             const std::string job = root.get("job") ? root.get("job")->as_string() : std::string();
@@ -188,8 +192,9 @@ int run_stdio_server(Runtime &runtime) {
             // 避免工作线程抢在 begin 前面吐 audio 行。
             static std::atomic<uint64_t> counter{0};
             request.id = id.empty() ? "s" + std::to_string(++counter) : id;
-            // 音色解析与 HTTP 一致：只接受 id + scope，路径由服务端拼
+            // 音色解析与 HTTP 一致：只接受 id + scope，路径由服务端拼；不给 voice 就用默认音色
             const std::string scope = root.get("scope") ? root.get("scope")->as_string("builtin") : "builtin";
+            if (request.voice.empty()) request.voice = runtime.default_voice();
             const std::string base =
                 scope == "user" ? runtime.options().user_voices_dir : runtime.options().voices_dir;
             request.profile = base + "/" + request.voice + ".mossclone";

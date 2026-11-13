@@ -27,14 +27,16 @@ struct RuntimeOptions {
     std::string voices_dir;       // 内置音色目录
     std::string user_voices_dir;  // 用户克隆（与内置物理隔离）
     std::string cache_dir;        // 前缀 KV 缓存 + 临时文件
+    std::string data_dir;         // 用户数据目录（settings.json 在这里）
     std::string manifest_path;    // models/manifest.json（可空）
-    int llm_threads = 0;          // 0 = 按物理核自动
+    int llm_threads = 0;          // 0 = 按物理核自动（默认 2+2）
     int decode_threads = 0;
     int max_queue = 4;
 };
 
 struct VoiceInfo {
     std::string id;
+    std::string label;  // 显示名（内置音色有中文名；用户音色等于 id）
     bool user = false;
     int frames = 0;
     double seconds = 0.0;
@@ -43,7 +45,7 @@ struct VoiceInfo {
 struct JobRequest {
     std::string id;                // 客户端指定（可空，空则由运行时生成）
     std::string text;
-    std::string voice = "Junhao";  // 内置音色 id
+    std::string voice;             // 内置音色 id（空 = 用运行时默认音色）
     std::string profile;           // 自定义档案路径（非空则优先于 voice）
     uint64_t seed = 0;
     bool greedy = false;
@@ -96,6 +98,8 @@ public:
     const std::string &model_revision() const { return model_revision_; }
 
     std::vector<VoiceInfo> voices() const;
+    // 默认音色 id：manqu（满满）存在就用它，否则目录里第一个内置音色
+    std::string default_voice() const;
     bool clone_voice(const std::string &name, const std::vector<uint8_t> &wav_bytes, std::string *err);
 
     // 入队；队列满返回 false（err = "busy"）。返回的 job_id 可用于查询/取消。

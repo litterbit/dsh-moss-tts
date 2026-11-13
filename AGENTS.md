@@ -161,7 +161,15 @@ AVX2 没有 f16 算术，但 int8→fp32 展宽比预想便宜：
 
 实测同一台（6P+8E）：**4+4 = 6.88 ms/帧，3+3 = 7.65，2+2 = 11.35**。
 按物理核数给：2C→2+2，4C→3+3，6C+→4+4（解码器是热点，可 4+6）。超线程不算独立核。
-默认 4+4；**线程数不影响输出**（只切行），可以按机器随便调。
+**线程数不影响输出**（只切行），可以按机器随便调。
+
+**当前默认 2+3**（2026-11-13 起，LLM 2 / 解码器 3；单核机器 1+1）——`runtime.cpp` 的 `auto_threads()`。
+用户可调：网页「性能」面板 → `POST /api/v1/settings` → `<data>/settings.json`
+（`llm_threads` / `decode_threads`，0 = 自动）；命令行 `--threads/--decode-threads` 优先于文件。
+**改完必须重启进程**（线程池随模型加载建好，没有中途重建路径），面板会明确写"重启生效"。
+
+**默认音色 `manqu`（满满）**：`voices.h` 的 `kDefaultVoiceId`，目录里没有它时退回第一个内置音色。
+内置音色的中文显示名也在 `voices.cpp` 的表里（只影响 `label`，不影响推理）。
 
 ### 前缀缓存（.mosskv）
 
@@ -251,6 +259,16 @@ build\moss_clone.exe --encoder ..\models\encoder_f16.moss --in ref.wav --out voi
   **回放 SNR 6.03 dB vs ONNX 6.01 dB**，克隆 prompt 的 teacher-forced 翻转 5.99%（= 量化本底）。
 - **坑**：`data/clone_wav/*.wav` 是 MP3-in-WAV（fmt tag 0x55），必须先转 PCM；
   编码器 LFQ 的最近邻在归一化空间，但**重建残差用原始码本向量**（写错会让 codes 与 ONNX 只有 7% 相同）。
+- **参考音频上限 20 秒**（`engine.cpp` 的 `kMaxCloneSeconds`，HTTP/stdio 超了直接 400；
+  `moss_clone` 用 `--start/--seconds` 选段，没有就自动截前 20 秒并打一行提示）。
+  再长只会拉长 prompt、变慢，音色不会更好。
+- **引擎只吃 PCM**：MP3/AAC 的解码放在浏览器里（`web/app/clone-audio.js` 的纯函数 +
+  页面里的 `OfflineAudioContext.decodeAudioData`，顺带把采样率转成 48 kHz），
+  流程是 解码 → 波形上拖选段 / 试听 → `buildWav16` 重打包 → POST `/api/v1/voices/clone`。
+  所以 `wav_read` 遇到压缩格式要报**真实编码**（`参考音频是 MP3 编码（0x0055）`），
+  别再掉进块对齐检查报"块对齐不符合预期"——那只是 `bits=0` 的副作用。
+- 回归：`node tools/clone_sim.mjs --exe csrc/build/moss_tts.exe --models models`
+  （纯逻辑 + index.html/app.js 的 id 契约 + 真引擎四条：12 s 整段 / 8 s 窗口 / 25 s 拒绝 / MP3-in-WAV 报编码）。
 
 ### 发版
 

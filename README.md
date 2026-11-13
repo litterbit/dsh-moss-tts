@@ -98,9 +98,10 @@ build.bat                     :: 需要 VS 2022（Build Tools 即可）+ C++ 工
 
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch_weights.ps1 -Weights weights
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack_release.ps1 -Mode all -Tag v0.1.1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pack_release.ps1 -Mode all -Tag v0.1.2
 python tools/http_smoke.py                          :: 服务端冒烟（流式/取消/安全/限速）
 node tools/playback_sim.mjs                         :: 播放链路重放（不能丢样）
+node tools/clone_sim.mjs                            :: 克隆链路（浏览器选段 -> PCM WAV -> 引擎）
 ```
 
 ## 目录

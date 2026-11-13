@@ -19,6 +19,7 @@ struct ServerOptions {
     std::string host = "127.0.0.1";
     int port = 8759;
     int port_attempts = 5;               // 端口占用时顺延次数
+    int port_wait_ms = 0;                // 首选端口被占时先等多久（"重启"换进程时用，见 --port-wait）
     bool open_browser = true;
     int max_connections = 16;
     bool allow_project_origin = true;        // 放行项目门户的 origin（浏览器直连本地引擎）
